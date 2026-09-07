@@ -1,0 +1,7 @@
+Flask
+flask-cors
+pandas
+pymongo
+numpy
+werkzeug
+reportlab

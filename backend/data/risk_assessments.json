@@ -1,0 +1,12 @@
+[
+  {
+    "userId": "u1",
+    "riskLevel": "Low",
+    "score": 15,
+    "details": [],
+    "explanation": "",
+    "date": "2026-09-07T08:57:04.479299",
+    "createdAt": "2026-09-07T08:57:04.479299",
+    "_id": "risk_assessments_1788771424479_0"
+  }
+]
