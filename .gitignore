@@ -1,0 +1,211 @@
+# ==============================================================================
+# NeuroSense AI - Ethical, Privacy, Security & Environment GitIgnore Configuration
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. ETHICAL & CLINICAL DATA PROTECTION (PHI / PII / HIPAA / GDPR Compliance)
+# Participant-derived, patient records, and diagnostic tabular datasets
+# ------------------------------------------------------------------------------
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.parquet
+*.feather
+*.dta
+*.sas7bdat
+*.sav
+*.rda
+*.rdata
+/data/
+/datasets/
+/dataset/
+raw_data/
+processed_data/
+clinical_data/
+patient_data/
+participant_data/
+
+# Local databases and runtime JSON datastores (contains user test results & scores)
+backend/data/*
+!backend/data/.gitkeep
+backend/data/*.json
+norms.json
+norms.backup.json
+*.backup.json
+*.db
+*.sqlite
+*.sqlite3
+*.rdb
+
+# ------------------------------------------------------------------------------
+# 2. AUDIO & BIOMETRIC RECORDINGS (Ethical Consent & Speaker Identification)
+# Raw speech samples, participant voice recordings, and temporary audio uploads
+# ------------------------------------------------------------------------------
+*.wav
+*.mp3
+*.ogg
+*.webm
+*.m4a
+*.flac
+*.aac
+*.wma
+*.opus
+*.pcm
+*.caf
+backend/temp/*
+!backend/temp/.gitkeep
+backend/uploads/
+uploads/
+recordings/
+audio/
+
+# ------------------------------------------------------------------------------
+# 3. CLINICAL TRANSCRIPTS & LINGUISTIC CORPORA
+# Transcripts containing conversational, cognitive, and linguistic evaluations
+# ------------------------------------------------------------------------------
+*.cha
+*.txt.cha
+*.vtt
+*.srt
+*.textgrid
+*.eaf
+transcripts/
+
+# ------------------------------------------------------------------------------
+# 4. JUPYTER NOTEBOOKS (Prevent accidental leakage of cached outputs & patient IDs)
+# ------------------------------------------------------------------------------
+*.ipynb
+.ipynb_checkpoints/
+*-checkpoint.ipynb
+
+# ------------------------------------------------------------------------------
+# 5. MACHINE LEARNING MODELS & WEIGHTS
+# Trained weights, serializations, and checkpoints (prevents model reverse engineering)
+# ------------------------------------------------------------------------------
+*.pkl
+*.pickle
+*.joblib
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+*.h5
+*.hdf5
+*.onnx
+*.tflite
+models/*
+!models/.gitkeep
+*.npy
+*.npz
+
+# ------------------------------------------------------------------------------
+# 6. SECRETS, CREDENTIALS & API KEYS
+# ------------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+*.crt
+*.pfx
+*.p12
+*.der
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+*secret*
+*credential*
+*token*
+*apikey*
+secrets.*
+*firebase*.json
+*serviceAccountKey*.json
+service_account*.json
+client_secret*.json
+credentials.json
+
+# ------------------------------------------------------------------------------
+# 7. RESEARCH SCRATCHPADS, EXPERIMENTS & BENCHMARKS
+# ------------------------------------------------------------------------------
+scratch/
+scratch_*.py
+cv_results*.csv
+grouped_cv_results*.csv
+experiments/
+wandb/
+mlruns/
+lightning_logs/
+
+# ------------------------------------------------------------------------------
+# 8. PYTHON ENVIRONMENTS & BUILD ARTIFACTS
+# ------------------------------------------------------------------------------
+__pycache__/
+backend/__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+.venv_fresh/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# ------------------------------------------------------------------------------
+# 9. NODE.JS & FRONTEND ARTIFACTS
+# ------------------------------------------------------------------------------
+node_modules/
+neurosense-ai/node_modules/
+dist/
+dist-ssr/
+neurosense-ai/dist/
+neurosense-ai/dist-ssr/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# ------------------------------------------------------------------------------
+# 10. OPERATING SYSTEM & IDE CACHES
+# ------------------------------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
+*.swp
+*.swo
+*.suo
+*.log
+.cache/

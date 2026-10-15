@@ -17,7 +17,7 @@ export const riskService = {
     else if (age > 60) { baselineScore += 10; details.push({ label: 'Age Factor', impact: 'Moderate', desc: 'Age > 60 increases baseline risk.' }); }
 
     // 2. Medical Conditions (Checkboxes)
-    const conditions = user.conditions || {};
+    const conditions = (user && typeof user.conditions === 'object' && user.conditions !== null) ? user.conditions : {};
     if (conditions.stroke) { baselineScore += 20; details.push({ label: 'Stroke History', impact: 'High', desc: 'Prior stroke is a significant clinical indicator.' }); }
     if (conditions.heartDisease) { baselineScore += 10; }
     if (conditions.diabetes) { baselineScore += 10; }
@@ -30,26 +30,26 @@ export const riskService = {
     }
 
     // 3. Family History
-    if (user.familyHistory === 'yes') {
+    if (user.familyHistory === 'yes' || user.familyHistory === 1) {
       baselineScore += 15;
       details.push({ label: 'Family History', impact: 'High', desc: 'Genetic predisposition noted.' });
     }
 
     // 4. Lifestyle
-    const lifestyle = user.lifestyle || {};
-    if (lifestyle.sleep === 'poor') { 
+    const lifestyle = (user && typeof user.lifestyle === 'object' && user.lifestyle !== null) ? user.lifestyle : {};
+    if (lifestyle.sleep === 'poor' || (lifestyle.SleepQuality && lifestyle.SleepQuality < 5)) { 
       baselineScore += 10; 
       suggestions.push({ title: 'Sleep Hygiene', desc: 'Target 7-8 hours of sleep to improve memory consolidation.' }); 
     }
-    if (lifestyle.smoking === 'yes') { baselineScore += 10; suggestions.push({ title: 'Smoking Cessation', desc: 'Quitting smoking significantly improves vascular brain health.' });}
-    if (lifestyle.alcohol === 'yes') { baselineScore += 5; }
-    if (lifestyle.activity === 'low') { 
+    if (lifestyle.smoking === 'yes' || lifestyle.Smoking === 1) { baselineScore += 10; suggestions.push({ title: 'Smoking Cessation', desc: 'Quitting smoking significantly improves vascular brain health.' });}
+    if (lifestyle.alcohol === 'yes' || (lifestyle.AlcoholConsumption && lifestyle.AlcoholConsumption > 3)) { baselineScore += 5; }
+    if (lifestyle.activity === 'low' || (lifestyle.PhysicalActivity !== undefined && lifestyle.PhysicalActivity < 3)) { 
       baselineScore += 10; 
       suggestions.push({ title: 'Physical Activity', desc: 'Incorporate 30 mins of moderate aerobic exercise daily.' });
     }
 
     // 5. Cognitive Symptoms
-    const symptoms = user.symptoms || {};
+    const symptoms = (user && typeof user.symptoms === 'object' && user.symptoms !== null) ? user.symptoms : {};
     let sympCount = 0;
     if (symptoms.forgetfulness) { baselineScore += 10; sympCount++; }
     if (symptoms.concentration) { baselineScore += 10; sympCount++; }

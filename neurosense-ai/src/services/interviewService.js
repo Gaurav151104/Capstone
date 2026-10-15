@@ -1,8 +1,8 @@
-import { getFromStorage, saveToStorage } from './api';
+import { getFromStorage, saveToStorage, API_BASE_URL } from './api';
 import { authService } from './authService';
 
 const INTERVIEWS_KEY = 'neurosense_interviews';
-const BACKEND_URL = 'http://localhost:5000/api';
+const BACKEND_URL = `${API_BASE_URL}/api`;
 
 export const interviewService = {
   async saveInterviewResult(resultData) {

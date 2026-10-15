@@ -22,10 +22,22 @@ import {
 
 export default function Dashboard() {
   const { user } = useAuth();
-  const { t } = useApp();
-  const [logs] = useState(() => gameService.getUserLogs());
-  const [riskAssessment] = useState(() => riskService.calculateRisk(user));
-  const hasData = logs.length > 0;
+  const { t = {} } = useApp();
+  const [logs] = useState(() => {
+    try {
+      return (gameService && typeof gameService.getUserLogs === 'function') ? gameService.getUserLogs() : [];
+    } catch (e) {
+      return [];
+    }
+  });
+  const [riskAssessment] = useState(() => {
+    try {
+      return (riskService && typeof riskService.calculateRisk === 'function') ? riskService.calculateRisk(user) : { riskLevel: 'Unknown', score: 0 };
+    } catch (e) {
+      return { riskLevel: 'Unknown', score: 0 };
+    }
+  });
+  const hasData = Array.isArray(logs) && logs.length > 0;
 
   const getRecentChartData = () => {
     if (!hasData) return [];

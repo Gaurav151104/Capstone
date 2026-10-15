@@ -19,6 +19,7 @@ import RiskAssessment from './pages/Risk/RiskAssessment';
 import Recommendations from './pages/Therapy/Recommendations';
 import Profile from './pages/Profile/Profile';
 import CognitiveInterview from './pages/Interview/CognitiveInterview';
+import VoiceRecallGame from './pages/Games/VoiceRecallGame';
 
 const ProtectedRoute = ({ children }) => {
   const { user } = useAuth();
@@ -63,6 +64,8 @@ export default function App() {
                 <Route path="games/image-recall" element={<ImageRecallGame />} />
                 <Route path="games/recall" element={<WordRecall />} />
                 <Route path="games/reaction-time" element={<ReactionTimeGame />} />
+                <Route path="games/voice" element={<VoiceRecallGame />} />
+                <Route path="speech" element={<VoiceRecallGame />} />
                 
                 <Route path="interview" element={<CognitiveInterview />} />
                 <Route path="progress" element={<Progress />} />

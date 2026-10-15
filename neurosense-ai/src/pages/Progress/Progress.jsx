@@ -20,6 +20,7 @@ import { gameService } from '../../services/gameService';
 import { interviewService } from '../../services/interviewService';
 import { riskService } from '../../services/riskService';
 import { useAuth } from '../../hooks/useAuth';
+import { API_BASE_URL } from '../../services/api';
 
 export default function Progress() {
   const { user } = useAuth();
@@ -34,7 +35,7 @@ export default function Progress() {
   // Attempt backend history fetch with fallback to local state
   useEffect(() => {
     if (!user?.id) return;
-    fetch(`http://localhost:5000/api/user-history/${user.id}`)
+    fetch(`${API_BASE_URL}/api/user-history/${user.id}`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (data) setBackendHistory(data);
@@ -145,7 +146,7 @@ export default function Progress() {
     setIsDownloadingPdf(true);
     try {
       const uid = user?.id || 'guest_user';
-      const res = await fetch(`http://localhost:5000/api/report/${uid}`);
+      const res = await fetch(`${API_BASE_URL}/api/report/${uid}`);
       if (!res.ok) throw new Error('PDF report generation failed on backend');
 
       const blob = await res.blob();

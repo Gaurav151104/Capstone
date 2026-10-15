@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Gamepad2, Image as ImageIcon, Brain, ArrowRight, Info, ArrowLeft, Zap } from 'lucide-react';
+import { Gamepad2, Image as ImageIcon, Brain, ArrowRight, Info, ArrowLeft, Zap, Mic } from 'lucide-react';
 import Card from '../../components/Card';
 import { gameService } from '../../services/gameService';
 import { useApp } from '../../hooks/useApp';
@@ -24,10 +24,16 @@ export default function Games() {
         <p className="text-slate-500 dark:text-slate-400">{t.games_subtitle || 'Scientifically designed cognitive screening and brain training exercises.'}</p>
       </div>
 
+      {/* Provisional Norms Notice */}
+      <div className="bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/40 text-amber-900 dark:text-amber-200 rounded-xl p-3.5 flex items-center text-xs font-medium shadow-sm">
+        <Info className="h-4 w-4 mr-2.5 text-amber-600 dark:text-amber-400 flex-shrink-0" />
+        <p>All cognitive screening measures (Word Recall, Image Recall, Reaction Time, and Memory Match) use provisional normative approximations. Screening aid only, not a medical diagnosis.</p>
+      </div>
+
       {!hasPlayed && (
         <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-900/30 text-blue-800 dark:text-blue-300 rounded-xl p-4 flex items-center shadow-sm">
           <Info className="h-5 w-5 mr-3 text-blue-600 dark:text-blue-400 flex-shrink-0" />
-           <p className="font-medium">{t.games_subtitle || 'Complete assessments to build your cognitive profile.'}</p>
+          <p className="font-medium text-sm">{t.games_subtitle || 'Complete assessments to build your cognitive profile.'}</p>
         </div>
       )}
 
@@ -81,6 +87,24 @@ export default function Games() {
           </p>
           <Link to="/dashboard/games/reaction-time" className="btn-primary mt-6 group-hover:bg-primary-700 w-full flex items-center justify-center text-sm">
             {t.start_game || 'Play Now'} <ArrowRight className="ml-2 h-4 w-4" />
+          </Link>
+        </Card>
+
+        <Card className="hover:border-rose-200 dark:hover:border-rose-800 transition-all hover:shadow-md flex flex-col h-full cursor-pointer group md:col-span-2 lg:col-span-2 bg-gradient-to-br from-white to-rose-50/30 dark:from-slate-900 dark:to-rose-950/20">
+          <div className="flex items-center justify-between mb-4">
+            <div className="h-16 w-16 rounded-2xl bg-rose-50 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 flex items-center justify-center">
+              <Mic className="h-8 w-8" />
+            </div>
+            <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-rose-100 dark:bg-rose-900/50 text-rose-700 dark:text-rose-300">
+              AI Voice Biomarkers
+            </span>
+          </div>
+          <h3 className="text-xl font-bold text-slate-800 dark:text-white mb-2">Voice Biomarker Screening</h3>
+          <p className="text-slate-600 dark:text-slate-400 flex-1 text-sm leading-relaxed">
+            Standardized clinical speech challenges (Cookie Theft description, verbal fluency, and reading cadence). Uses Librosa to extract 34 acoustic biomarkers and predicts cognitive risk with trained ML models.
+          </p>
+          <Link to="/dashboard/games/voice" className="btn-primary mt-6 group-hover:bg-rose-600 w-full flex items-center justify-center text-sm">
+            Start Voice Challenge <ArrowRight className="ml-2 h-4 w-4" />
           </Link>
         </Card>
       </div>
