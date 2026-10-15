@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Gamepad2, Image as ImageIcon, Brain, ArrowRight, Info, ArrowLeft, Zap, Mic } from 'lucide-react';
+import { Gamepad2, Image as ImageIcon, Brain, ArrowRight, Info, ArrowLeft, Zap } from 'lucide-react';
 import Card from '../../components/Card';
 import { gameService } from '../../services/gameService';
 import { useApp } from '../../hooks/useApp';
@@ -90,23 +90,6 @@ export default function Games() {
           </Link>
         </Card>
 
-        <Card className="hover:border-rose-200 dark:hover:border-rose-800 transition-all hover:shadow-md flex flex-col h-full cursor-pointer group md:col-span-2 lg:col-span-2 bg-gradient-to-br from-white to-rose-50/30 dark:from-slate-900 dark:to-rose-950/20">
-          <div className="flex items-center justify-between mb-4">
-            <div className="h-16 w-16 rounded-2xl bg-rose-50 dark:bg-rose-900/30 text-rose-600 dark:text-rose-400 flex items-center justify-center">
-              <Mic className="h-8 w-8" />
-            </div>
-            <span className="text-xs font-semibold px-2.5 py-1 rounded-full bg-rose-100 dark:bg-rose-900/50 text-rose-700 dark:text-rose-300">
-              AI Voice Biomarkers
-            </span>
-          </div>
-          <h3 className="text-xl font-bold text-slate-800 dark:text-white mb-2">Voice Biomarker Screening</h3>
-          <p className="text-slate-600 dark:text-slate-400 flex-1 text-sm leading-relaxed">
-            Standardized clinical speech challenges (Cookie Theft description, verbal fluency, and reading cadence). Uses Librosa to extract 34 acoustic biomarkers and predicts cognitive risk with trained ML models.
-          </p>
-          <Link to="/dashboard/games/voice" className="btn-primary mt-6 group-hover:bg-rose-600 w-full flex items-center justify-center text-sm">
-            Start Voice Challenge <ArrowRight className="ml-2 h-4 w-4" />
-          </Link>
-        </Card>
       </div>
     </div>
   );

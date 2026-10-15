@@ -208,13 +208,13 @@ def get_next_word_list_form(recent_form_ids: List[str], seed: Optional[int] = No
 
 def generate_word_recall_stimuli(form_id: str, seed: int) -> Dict[str, Any]:
     """
-    Deterministically generates Word Recall stimuli from (form_id, seed).
+    Deterministically generates five Word Recall stimuli from (form_id, seed).
     """
     form_data = WORD_LIST_POOLS.get(form_id, WORD_LIST_POOLS['FORM_A'])
     rng = random.Random(seed)
 
     base_words = list(form_data['words'])
-    shuffled_words = seeded_fisher_yates(base_words, rng)
+    shuffled_words = seeded_fisher_yates(base_words, rng)[:5]
 
     # Distractor words from an alternate form
     all_forms = sorted(list(WORD_LIST_POOLS.keys()))

@@ -152,6 +152,7 @@ class TestRealDatabaseSessionRotation(unittest.TestCase):
             current_form = data["formId"]
             seed = data["seed"]
             words = data["words"]
+            self.assertEqual(len(words), 5)
 
             # Assert 1: Never repeats the immediate previous form
             if form_history:
