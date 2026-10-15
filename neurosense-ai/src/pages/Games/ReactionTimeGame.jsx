@@ -1,6 +1,5 @@
 /* eslint-disable react-hooks/purity */
 import React, { useState, useRef, useEffect } from 'react';
-import { Link } from 'react-router-dom';
 import { 
   Zap, 
   ArrowLeft, 
@@ -10,20 +9,24 @@ import {
   Clock, 
   Activity, 
   TrendingUp,
-  Gamepad2,
-  Monitor,
+  LayoutDashboard,
   ShieldCheck,
   Info
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import Card from '../../components/Card';
 import { gameService } from '../../services/gameService';
-import { measureDeviceAndRefreshRate } from '../../utils/cognitivePools';
+import { 
+  measureDeviceAndRefreshRate, 
+  generateReactionTimeISIs, 
+  calculateReactionTimeStats 
+} from '../../utils/cognitivePools';
 import CognitiveConsentModal from '../../components/CognitiveConsentModal';
-
-const NUM_PRACTICE_TRIALS = 5;
-const NUM_TEST_TRIALS = 20;
+import { COGNITIVE_ASSESSMENT_CONFIG } from '../../config/cognitiveConfig';
 
 export default function ReactionTimeGame() {
+  const navigate = useNavigate();
+
   // Game states: 'intro' | 'practice_intro' | 'waiting' | 'ready' | 'trial_result' | 'early_click' | 'practice_finished' | 'completed'
   const [gameState, setGameState] = useState('intro');
   const [sessionInfo, setSessionInfo] = useState(null);
@@ -36,14 +39,18 @@ export default function ReactionTimeGame() {
   const [lastReaction, setLastReaction] = useState(0);
   const [resultsSummary, setResultsSummary] = useState(null);
   const [deviceInfo, setDeviceInfo] = useState(null);
+  const [isStarting, setIsStarting] = useState(false);
   const [consentOpen, setConsentOpen] = useState(false);
-  const [serverError, setServerError] = useState('');
+  const [normZScore, setNormZScore] = useState(null);
 
   const timeoutRef = useRef(null);
   const cueTimeRef = useRef(0);
+  const hasSavedRef = useRef(false);
+
+  const numPractice = COGNITIVE_ASSESSMENT_CONFIG.reactionTime.numPracticeTrials || 3;
+  const numTest = COGNITIVE_ASSESSMENT_CONFIG.reactionTime.numTestTrials || 10;
 
   useEffect(() => {
-    // Measure refresh rate and device specs upon load
     measureDeviceAndRefreshRate().then(info => setDeviceInfo(info));
     return () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
@@ -51,21 +58,42 @@ export default function ReactionTimeGame() {
   }, []);
 
   const initGameSession = async () => {
+    if (isStarting) return;
+    setIsStarting(true);
+    hasSavedRef.current = false;
+
+    // Check consent status
     const hasConsent = await gameService.getServerConsent();
     if (!hasConsent) {
       setConsentOpen(true);
+      setIsStarting(false);
       return;
     }
 
     try {
-      setServerError('');
-      const session = await gameService.fetchNextSessionItems('Reaction Time', {
-        num_practice: NUM_PRACTICE_TRIALS,
-        num_test: NUM_TEST_TRIALS
-      });
-      if (!session || !session.practiceIsis || !session.testIsis || session.practiceIsis.length < NUM_PRACTICE_TRIALS || session.testIsis.length < NUM_TEST_TRIALS) {
-        throw new Error('Server did not supply required ISI timing sequence for Reaction Time protocol.');
+      let session = null;
+      try {
+        session = await gameService.fetchNextSessionItems('Reaction Time', {
+          num_practice: numPractice,
+          num_test: numTest
+        });
+      } catch (e) {
+        console.warn('Backend ISI sync unavailable, generating local randomized delay sequence:', e);
       }
+
+      const minDelay = COGNITIVE_ASSESSMENT_CONFIG.reactionTime.minDelayMs || 1500;
+      const maxDelay = COGNITIVE_ASSESSMENT_CONFIG.reactionTime.maxDelayMs || 3500;
+
+      if (!session || !session.testIsis || session.testIsis.length < numTest) {
+        session = {
+          game: 'Reaction Time',
+          formId: 'RT_PROTOCOL_1',
+          practiceIsis: generateReactionTimeISIs(numPractice, minDelay, maxDelay),
+          testIsis: generateReactionTimeISIs(numTest, minDelay, maxDelay),
+          sessionId: `sess_rt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+        };
+      }
+
       setSessionInfo(session);
       setIsPractice(true);
       setTrialIndex(0);
@@ -74,27 +102,23 @@ export default function ReactionTimeGame() {
       setFalseStarts(0);
       setLastReaction(0);
       setResultsSummary(null);
+      setNormZScore(null);
       setGameState('practice_intro');
     } catch (e) {
       console.error('Failed to init Reaction Time session:', e);
-      setServerError(e.message || 'Server did not supply required ISI timing sequence. Session cannot start.');
-      setGameState('error');
+    } finally {
+      setIsStarting(false);
     }
   };
 
   const startNextTrial = () => {
-    // Randomize ISI strictly from server-provided timing sequence (no client randomness)
     const isis = isPractice ? sessionInfo?.practiceIsis : sessionInfo?.testIsis;
-    const isiMs = isis ? isis[trialIndex] : null;
-
-    if (!isiMs) {
-      setServerError('Server did not supply required ISI timing sequence for this trial. Session aborted.');
-      setGameState('error');
-      return;
-    }
+    const fallbackDelay = Math.round(1500 + Math.random() * 2000);
+    const isiMs = (isis && isis[trialIndex]) ? isis[trialIndex] : fallbackDelay;
 
     setGameState('waiting');
 
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
     timeoutRef.current = setTimeout(() => {
       cueTimeRef.current = performance.now();
       setGameState('ready');
@@ -103,7 +127,7 @@ export default function ReactionTimeGame() {
 
   const handleUserAction = () => {
     if (gameState === 'waiting') {
-      // False start! Clicked before stimulus turned green
+      // Premature click before stimulus turned green!
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
       setFalseStarts(prev => prev + 1);
       setGameState('early_click');
@@ -120,7 +144,7 @@ export default function ReactionTimeGame() {
         const nextIdx = trialIndex + 1;
         setTrialIndex(nextIdx);
 
-        if (nextIdx >= NUM_PRACTICE_TRIALS) {
+        if (nextIdx >= numPractice) {
           setGameState('practice_finished');
         } else {
           setGameState('trial_result');
@@ -131,7 +155,7 @@ export default function ReactionTimeGame() {
         const nextIdx = trialIndex + 1;
         setTrialIndex(nextIdx);
 
-        if (nextIdx >= NUM_TEST_TRIALS) {
+        if (nextIdx >= numTest) {
           finishGame(updated, falseStarts);
         } else {
           setGameState('trial_result');
@@ -140,70 +164,68 @@ export default function ReactionTimeGame() {
     }
   };
 
-  const finishGame = async (allTestTimes, totalFalseStarts) => {
-    // 1. Separate anticipations (<150ms) and lapses (>1000ms)
-    const anticipations = allTestTimes.filter(t => t < 150).length;
-    const lapses = allTestTimes.filter(t => t > 1000).length;
+  const finishGame = async (finalTestTimes, totalFalseStarts) => {
+    if (hasSavedRef.current) return;
+    hasSavedRef.current = true;
 
-    // Filter valid test trials for primary latency/SD calculation (exclude anticipations)
-    const validTrials = allTestTimes.filter(t => t >= 150);
-    const timesForStats = validTrials.length > 0 ? validTrials : allTestTimes;
-
-    // 2. Mean
-    const sum = timesForStats.reduce((a, b) => a + b, 0);
-    const mean = Math.round(sum / timesForStats.length);
-
-    // 3. Median
-    const sorted = [...timesForStats].sort((a, b) => a - b);
-    const mid = Math.floor(sorted.length / 2);
-    const median = sorted.length % 2 !== 0 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
-
-    // 4. Standard Deviation (Within-person variability)
-    const variance = timesForStats.reduce((acc, val) => acc + Math.pow(val - mean, 2), 0) / timesForStats.length;
-    const stdDev = Math.round(Math.sqrt(variance));
-
-    // 5. Standard score (0-100)
-    let baseScore = Math.max(10, Math.min(100, Math.round(135 - (mean * 0.18))));
-    const penalty = Math.min((totalFalseStarts * 3) + (lapses * 4), 25);
-    const finalScore = Math.max(10, baseScore - penalty);
-
-    // 6. Norm score evaluation
-    const scoreReport = await gameService.scoreSession({
-      reaction_time_mean_ms: mean,
-      reaction_time_sd_ms: stdDev
-    });
-
-    const summary = {
-      avgReactionTimeMs: mean,
-      medianMs: median,
-      variabilityMs: stdDev,
-      lapses,
-      anticipations,
-      falseStarts: totalFalseStarts,
-      score: finalScore,
-      trials: allTestTimes,
-      practiceTrials: practiceTimes,
-      normZScore: scoreReport?.per_measure_z?.reaction_time_mean_ms
-    };
-
-    setResultsSummary(summary);
     setGameState('completed');
 
-    // 7. Save session with device and refresh rate metadata
+    const stats = calculateReactionTimeStats(
+      finalTestTimes,
+      COGNITIVE_ASSESSMENT_CONFIG.reactionTime.prematureClickThresholdMs || 150,
+      COGNITIVE_ASSESSMENT_CONFIG.reactionTime.lapseThresholdMs || 1000
+    );
+
+    // Score calculation: baseline 250ms = 100%, 500ms = 50%
+    const score = Math.max(10, Math.min(100, Math.round(100 - ((stats.meanMs - 220) * 0.25) - (totalFalseStarts * 5))));
+
+    const summary = {
+      ...stats,
+      score,
+      falseStarts: totalFalseStarts,
+      trialsCount: finalTestTimes.length
+    };
+    setResultsSummary(summary);
+
+    const sessionId = sessionInfo?.sessionId || `sess_rt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+    // Save session to server and local storage
     await gameService.saveReactionTimeSession({
-      ...summary,
+      sessionId,
+      avgReactionTimeMs: stats.meanMs,
+      variabilityMs: stats.variabilityMs,
+      falseStarts: totalFalseStarts,
+      trials: finalTestTimes,
+      score,
+      medianMs: stats.medianMs,
+      lapses: stats.lapses,
+      anticipations: stats.anticipations,
       formId: sessionInfo?.formId || 'RT_PROTOCOL_1',
-      sessionNumber: sessionInfo?.sessionNumber || 1,
-      deviceInfo: deviceInfo || {},
-      seed: sessionInfo?.seed
+      deviceInfo: deviceInfo || {}
     });
+
+    // Score against normative UK Biobank simple visual reaction time distribution
+    const normReport = await gameService.scoreSession({
+      reaction_time_mean_ms: stats.meanMs,
+      reaction_time_sd_ms: stats.variabilityMs
+    });
+
+    if (normReport?.per_measure_z?.reaction_time_mean_ms !== undefined) {
+      setNormZScore(normReport.per_measure_z.reaction_time_mean_ms);
+    }
   };
 
-  const currentTotal = isPractice ? NUM_PRACTICE_TRIALS : NUM_TEST_TRIALS;
-  const currentCount = isPractice ? practiceTimes.length : testTimes.length;
+  const startFormalTest = () => {
+    setIsPractice(false);
+    setTrialIndex(0);
+    setTestTimes([]);
+    startNextTrial();
+  };
+
+  const currentTotal = isPractice ? numPractice : numTest;
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in duration-300">
+    <div className="flex flex-col h-[calc(100vh-8rem)] max-w-3xl mx-auto overflow-hidden animate-in fade-in duration-500">
       <CognitiveConsentModal
         isOpen={consentOpen}
         onConsentGranted={() => {
@@ -213,277 +235,227 @@ export default function ReactionTimeGame() {
         onCancel={() => setConsentOpen(false)}
       />
 
-      <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-800">
-        <div className="flex items-center space-x-3">
-          <Link
-            to="/dashboard/games"
-            className="p-2 rounded-lg text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-          >
-            <ArrowLeft className="h-5 w-5" />
-          </Link>
-          <div>
-            <h1 className="text-2xl font-bold text-slate-800 dark:text-white flex items-center gap-2">
-              <Zap className="h-6 w-6 text-amber-500" />
-              Reaction Time & Attention Latency
-            </h1>
-            <p className="text-xs text-slate-500 dark:text-slate-400">
-              {sessionInfo ? `Protocol ${sessionInfo.formId} • Session #${sessionInfo.sessionNumber}` : 'Standardized visual psychomotor latency and attention variability protocol'}
-            </p>
-          </div>
-        </div>
+      {/* Top Header & Navigation */}
+      <div className="flex items-center justify-between mb-4">
+        <button 
+          onClick={() => navigate('/dashboard/games')}
+          className="flex items-center text-slate-500 hover:text-primary-600 dark:hover:text-primary-400 transition-colors font-medium text-sm"
+        >
+          <ArrowLeft className="h-4 w-4 mr-2" /> Back to Games
+        </button>
 
-        {deviceInfo && (
-          <div className="hidden sm:flex items-center gap-2 text-xs text-slate-500 bg-slate-50 dark:bg-slate-800/80 px-3 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700">
-            <Monitor className="h-3.5 w-3.5 text-primary-500" />
-            <span>Display: {deviceInfo.refreshRateFps} Hz ({deviceInfo.frameDeltaMs}ms)</span>
+        <span className="text-xs text-slate-400 font-medium">
+          Simple Visual Reaction Time (SRT) Protocol
+        </span>
+      </div>
+
+      {/* Control Bar */}
+      <div className="flex flex-col sm:flex-row justify-between items-center bg-white dark:bg-slate-900 p-4 rounded-xl shadow-sm border border-slate-100 dark:border-slate-800 flex-shrink-0 mb-4 z-10 transition-colors duration-200">
+        <div>
+          <h2 className="text-xl font-bold flex items-center text-slate-800 dark:text-white">
+            <Zap className="mr-2 h-6 w-6 text-amber-500" /> Reaction Time
+          </h2>
+          <p className="text-xs text-muted">
+            {isPractice ? `Practice Phase • Trial ${trialIndex + 1} of ${numPractice}` : `Formal Assessment • Trial ${trialIndex + 1} of ${numTest}`}
+          </p>
+        </div>
+        
+        <div className="flex items-center space-x-3 mt-3 sm:mt-0">
+          {falseStarts > 0 && (
+            <span className="text-xs font-semibold px-2.5 py-1 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded-lg">
+              False Starts: {falseStarts}
+            </span>
+          )}
+
+          <button 
+            onClick={initGameSession} 
+            disabled={isStarting}
+            className="btn-primary flex items-center py-1.5 px-4 text-xs disabled:opacity-50"
+          >
+            {gameState !== 'intro' ? <RotateCcw className="h-3.5 w-3.5 mr-1.5" /> : <Zap className="h-3.5 w-3.5 mr-1.5" />}
+            {isStarting ? 'Starting...' : (gameState !== 'intro' ? 'Restart Protocol' : 'Start Test')}
+          </button>
+        </div>
+      </div>
+
+      {/* Main Interactive Stimulus Canvas */}
+      <div className="flex-1 min-h-0 flex items-center justify-center relative">
+        {/* Intro */}
+        {gameState === 'intro' && (
+          <div className="w-full h-full max-h-96 flex flex-col items-center justify-center bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-8 text-center rounded-2xl shadow-sm transition-colors">
+            <div className="h-16 w-16 rounded-2xl bg-amber-50 dark:bg-amber-900/30 text-amber-500 flex items-center justify-center mb-4">
+              <Zap className="h-8 w-8" />
+            </div>
+            <h3 className="text-xl font-bold text-slate-800 dark:text-white">
+              Simple Visual Reaction Time (SRT)
+            </h3>
+            <p className="text-muted mt-2 text-xs sm:text-sm max-w-md leading-relaxed">
+              When the screen turns <strong className="text-emerald-600 dark:text-emerald-400">GREEN</strong>, tap or click anywhere as fast as you can. Do not click early while the screen is red.
+            </p>
+            <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-3 mt-4 text-xs text-slate-600 dark:text-slate-300 max-w-md flex items-center gap-2 text-left">
+              <ShieldCheck className="h-5 w-5 text-emerald-500 shrink-0" />
+              <span>Includes 3 practice trials followed by 10 calibrated test trials with variable 1.5–3.5s foreperiods.</span>
+            </div>
+            <button 
+              onClick={initGameSession} 
+              disabled={isStarting}
+              className="btn-primary px-8 py-2.5 mt-6 text-sm flex items-center"
+            >
+              <Zap className="h-4 w-4 mr-2" />
+              {isStarting ? 'Calibrating...' : 'Begin Protocol'}
+            </button>
+          </div>
+        )}
+
+        {/* Practice Intro */}
+        {gameState === 'practice_intro' && (
+          <div className="w-full h-full max-h-96 flex flex-col items-center justify-center bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-8 text-center rounded-2xl shadow-sm space-y-4">
+            <span className="text-xs font-bold text-amber-600 uppercase tracking-widest bg-amber-50 dark:bg-amber-950/40 px-3 py-1 rounded-full">
+              Familiarization Phase
+            </span>
+            <h3 className="text-xl font-bold text-slate-800 dark:text-white">
+              Practice Trials ({numPractice} trials)
+            </h3>
+            <p className="text-muted text-xs sm:text-sm max-w-md leading-relaxed">
+              Let's do {numPractice} quick practice trials so you can get used to the timing. These will not count towards your formal score.
+            </p>
+            <button onClick={startNextTrial} className="btn-primary px-8 py-2.5 text-sm">
+              Start Practice 1 of {numPractice}
+            </button>
+          </div>
+        )}
+
+        {/* Waiting State (Red Screen) */}
+        {gameState === 'waiting' && (
+          <div 
+            onClick={handleUserAction}
+            className="w-full h-full rounded-2xl bg-rose-600 hover:bg-rose-700 flex flex-col items-center justify-center text-white cursor-pointer select-none p-6 text-center transition-colors shadow-inner"
+          >
+            <Clock className="h-16 w-16 mb-4 animate-pulse opacity-80" />
+            <h3 className="text-3xl font-extrabold tracking-wide">WAIT FOR GREEN...</h3>
+            <p className="text-sm opacity-90 mt-2">Do not tap yet!</p>
+            <span className="text-xs opacity-75 mt-4">
+              Trial {trialIndex + 1} of {currentTotal} {isPractice ? '(Practice)' : ''}
+            </span>
+          </div>
+        )}
+
+        {/* Ready State (Green Screen) */}
+        {gameState === 'ready' && (
+          <div 
+            onClick={handleUserAction}
+            className="w-full h-full rounded-2xl bg-emerald-500 hover:bg-emerald-600 flex flex-col items-center justify-center text-white cursor-pointer select-none p-6 text-center transition-colors animate-in zoom-in-95 duration-100 shadow-2xl"
+          >
+            <Zap className="h-20 w-20 mb-4 animate-bounce" />
+            <h3 className="text-4xl sm:text-5xl font-black tracking-wider">TAP NOW!</h3>
+            <span className="text-xs opacity-80 mt-4 font-semibold">Click or tap anywhere!</span>
+          </div>
+        )}
+
+        {/* Premature / Early Click */}
+        {gameState === 'early_click' && (
+          <div className="w-full h-full max-h-96 flex flex-col items-center justify-center bg-rose-50 dark:bg-rose-950/20 rounded-2xl border-2 border-rose-200 dark:border-rose-900/40 p-8 text-center space-y-4">
+            <AlertTriangle className="h-14 w-14 text-rose-500" />
+            <h3 className="text-2xl font-bold text-rose-700 dark:text-rose-400">Too Early!</h3>
+            <p className="text-sm text-slate-600 dark:text-slate-300 max-w-sm">
+              You clicked before the stimulus turned green. Premature clicks count as a false start. Wait until the color changes.
+            </p>
+            <button onClick={startNextTrial} className="btn-primary bg-rose-600 hover:bg-rose-700 px-8 py-2 text-sm">
+              Retry Trial
+            </button>
+          </div>
+        )}
+
+        {/* Single Trial Result */}
+        {gameState === 'trial_result' && (
+          <div className="w-full h-full max-h-96 flex flex-col items-center justify-center bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-8 text-center space-y-4">
+            <span className="text-xs text-muted uppercase font-bold">
+              Trial {trialIndex} of {currentTotal} {isPractice ? '(Practice)' : ''}
+            </span>
+            <div className="text-5xl font-black text-slate-800 dark:text-white">
+              {lastReaction} <span className="text-2xl text-slate-400 font-normal">ms</span>
+            </div>
+            <p className="text-xs text-slate-500">
+              {lastReaction < 200 ? '⚡ Outstanding reaction speed!' : lastReaction < 350 ? '✓ Good, steady response.' : 'Tap as soon as green appears.'}
+            </p>
+            <button onClick={startNextTrial} className="btn-primary px-8 py-2 text-sm">
+              Next Trial ({trialIndex + 1}/{currentTotal})
+            </button>
+          </div>
+        )}
+
+        {/* Practice Finished */}
+        {gameState === 'practice_finished' && (
+          <div className="w-full h-full max-h-96 flex flex-col items-center justify-center bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-8 text-center space-y-4">
+            <CheckCircle2 className="h-14 w-14 text-emerald-500" />
+            <h3 className="text-2xl font-bold text-slate-800 dark:text-white">
+              Practice Completed!
+            </h3>
+            <p className="text-sm text-slate-600 dark:text-slate-300 max-w-sm leading-relaxed">
+              You are ready for the formal test. There will be {numTest} trials with randomized delays. Stay focused on the center.
+            </p>
+            <button onClick={startFormalTest} className="btn-primary px-8 py-2.5 text-sm">
+              Begin Formal Test (1 of {numTest})
+            </button>
+          </div>
+        )}
+
+        {/* Final Completion Summary */}
+        {gameState === 'completed' && resultsSummary && (
+          <div className="w-full h-full max-h-96 flex flex-col items-center justify-center bg-emerald-50/70 dark:bg-emerald-950/20 rounded-2xl border-2 border-emerald-100 dark:border-emerald-900/40 p-6 text-center transition-colors">
+            <div className="h-12 w-12 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mb-2">
+              <CheckCircle2 className="h-7 w-7" />
+            </div>
+            <h3 className="text-2xl font-bold text-emerald-700 dark:text-emerald-400 mb-1">
+              Assessment Completed!
+            </h3>
+
+            <div className="grid grid-cols-3 gap-3 my-3 max-w-md w-full">
+              <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-emerald-200 dark:border-emerald-800">
+                <span className="text-[10px] text-muted uppercase font-bold">Mean RT</span>
+                <p className="text-lg font-extrabold text-slate-800 dark:text-white">
+                  {resultsSummary.meanMs} <span className="text-xs font-normal">ms</span>
+                </p>
+              </div>
+              <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-emerald-200 dark:border-emerald-800">
+                <span className="text-[10px] text-muted uppercase font-bold">Variability (SD)</span>
+                <p className="text-lg font-extrabold text-slate-800 dark:text-white">
+                  ±{resultsSummary.variabilityMs} <span className="text-xs font-normal">ms</span>
+                </p>
+              </div>
+              <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-emerald-200 dark:border-emerald-800">
+                <span className="text-[10px] text-muted uppercase font-bold">False Starts</span>
+                <p className="text-lg font-extrabold text-rose-600 dark:text-rose-400">
+                  {resultsSummary.falseStarts}
+                </p>
+              </div>
+            </div>
+
+            {normZScore !== null && (
+              <p className="text-xs text-slate-600 dark:text-slate-400 font-medium">
+                Normative SRT z-Score: {normZScore > 0 ? '+' : ''}{normZScore} (Provisional UK Biobank Norm)
+              </p>
+            )}
+
+            <div className="flex items-center gap-1.5 text-[11px] text-slate-500 mt-2 max-w-md text-center">
+              <Info className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+              <span>Provisional visual reaction time screening. Individual trial latencies saved securely.</span>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-center gap-3 mt-4">
+              <button onClick={initGameSession} className="btn-primary px-6 py-2 text-xs flex items-center">
+                <RotateCcw className="h-3.5 w-3.5 mr-1.5" /> Retest / Next Session
+              </button>
+              <button 
+                onClick={() => navigate('/dashboard')} 
+                className="btn-outline px-6 py-2 text-xs flex items-center bg-white dark:bg-slate-900"
+              >
+                <LayoutDashboard className="h-3.5 w-3.5 mr-1.5" /> Return to Dashboard
+              </button>
+            </div>
           </div>
         )}
       </div>
-
-      {/* Mandatory Provisional Norms Disclaimer */}
-      <div className="p-3.5 rounded-xl bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/40 flex items-start gap-3">
-        <Info className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-        <div className="text-xs text-amber-900 dark:text-amber-200 leading-relaxed font-medium">
-          All cognitive screening measures (Word Recall, Image Recall, Reaction Time, and Memory Match) use provisional normative approximations. Screening aid only, not a medical diagnosis.
-        </div>
-      </div>
-
-      {/* Intro Screen */}
-      {gameState === 'intro' && (
-        <Card className="p-8">
-          <div className="max-w-xl mx-auto text-center space-y-6">
-            <div className="h-20 w-20 rounded-2xl bg-amber-50 dark:bg-amber-950/40 text-amber-500 flex items-center justify-center mx-auto border border-amber-200 dark:border-amber-900/50 shadow-sm">
-              <Zap className="h-10 w-10" />
-            </div>
-
-            <div className="space-y-2">
-              <h2 className="text-2xl font-bold text-slate-800 dark:text-white">
-                Clinical Visual Stimulus Response Protocol
-              </h2>
-              <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
-                Wait for the screen to turn <strong className="text-rose-500">RED</strong>, then as soon as it turns <strong className="text-emerald-500">BRIGHT GREEN</strong>, tap or click as fast as possible.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-3 gap-3 text-left">
-              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 text-center">
-                <Clock className="h-4 w-4 text-primary-500 mx-auto mb-1" />
-                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">5 Practice + 20 Test</p>
-                <p className="text-[10px] text-slate-500">ISI 1000–3000 ms</p>
-              </div>
-              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 text-center">
-                <Activity className="h-4 w-4 text-teal-500 mx-auto mb-1" />
-                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">Latency & Variability</p>
-                <p className="text-[10px] text-slate-500">Mean, Median, SD</p>
-              </div>
-              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 text-center">
-                <TrendingUp className="h-4 w-4 text-purple-500 mx-auto mb-1" />
-                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">Attentional Lapses</p>
-                <p className="text-[10px] text-slate-500">&gt;1000ms &amp; &lt;150ms</p>
-              </div>
-            </div>
-
-            <button
-              onClick={initGameSession}
-              className="btn-primary text-base px-8 py-3 w-full sm:w-auto shadow-md"
-            >
-              Begin Protocol (5 Practice Trials)
-            </button>
-          </div>
-        </Card>
-      )}
-
-      {/* Practice Intro Screen */}
-      {gameState === 'practice_intro' && (
-        <Card className="p-8 text-center space-y-4">
-          <span className="text-xs font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400">
-            Practice Phase (5 Trials)
-          </span>
-          <h2 className="text-2xl font-bold text-slate-800 dark:text-white">
-            Familiarization Practice
-          </h2>
-          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 max-w-md mx-auto">
-            These 5 practice trials are not normed and will not count towards your final assessment latency. Get ready!
-          </p>
-          <button onClick={startNextTrial} className="btn-primary px-8 py-3">
-            Start Practice Trial 1
-          </button>
-        </Card>
-      )}
-
-      {/* Interactive Click Zone (Waiting or Ready) */}
-      {(gameState === 'waiting' || gameState === 'ready') && (
-        <div
-          onClick={handleUserAction}
-          className={`h-[400px] rounded-3xl flex flex-col items-center justify-center cursor-pointer select-none transition-colors duration-150 p-6 text-center shadow-lg ${
-            gameState === 'ready'
-              ? 'bg-emerald-500 text-white animate-pulse'
-              : 'bg-rose-500 dark:bg-rose-600 text-white'
-          }`}
-        >
-          <div className="space-y-3">
-            <span className="text-xs sm:text-sm font-semibold uppercase tracking-wider bg-black/20 px-3 py-1 rounded-full inline-block">
-              {isPractice ? 'Practice' : 'Test'} Trial {trialIndex + 1} of {currentTotal}
-            </span>
-            <h2 className="text-3xl sm:text-5xl font-black tracking-tight">
-              {gameState === 'ready' ? '⚡ TAP / CLICK NOW!' : '⏳ WAIT FOR GREEN...'}
-            </h2>
-            <p className="text-xs sm:text-sm opacity-90 max-w-sm mx-auto">
-              {gameState === 'ready'
-                ? 'Respond as fast as humanly possible!'
-                : 'Do not click yet or an anticipation/false start will be recorded.'}
-            </p>
-          </div>
-        </div>
-      )}
-
-      {/* Early Click / Anticipation warning */}
-      {gameState === 'early_click' && (
-        <div className="h-[400px] rounded-3xl bg-amber-500 text-white flex flex-col items-center justify-center p-6 text-center space-y-4 shadow-lg">
-          <AlertTriangle className="h-16 w-16" />
-          <h2 className="text-3xl sm:text-4xl font-extrabold">Anticipation / False Start!</h2>
-          <p className="text-sm max-w-md opacity-95">
-            You clicked before the green stimulus cue appeared. Wait until you visually perceive green.
-          </p>
-          <button
-            onClick={startNextTrial}
-            className="px-6 py-3 bg-white text-amber-800 font-bold rounded-xl shadow hover:bg-amber-50"
-          >
-            Resume Trial
-          </button>
-        </div>
-      )}
-
-      {/* Intermediate trial feedback */}
-      {gameState === 'trial_result' && (
-        <Card className="p-8 text-center space-y-6">
-          <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-            {isPractice ? 'Practice' : 'Test'} Trial {currentCount} of {currentTotal}
-          </span>
-          <div className="text-5xl font-black text-slate-800 dark:text-white">
-            {lastReaction} <span className="text-xl font-normal text-slate-500">ms</span>
-          </div>
-          <p className="text-xs text-slate-500">
-            {lastReaction < 250 ? 'Excellent reaction time reflex.' : lastReaction < 380 ? 'Good typical psychomotor latency.' : lastReaction > 1000 ? 'Lapse detected (>1000ms).' : 'Solid trial.'}
-          </p>
-          <button onClick={startNextTrial} className="btn-primary px-8 py-3">
-            Next Trial ({trialIndex + 1}/{currentTotal})
-          </button>
-        </Card>
-      )}
-
-      {/* Practice Complete Screen */}
-      {gameState === 'practice_finished' && (
-        <Card className="p-8 text-center space-y-6">
-          <div className="h-16 w-16 rounded-full bg-emerald-100 dark:bg-emerald-950/40 text-emerald-600 mx-auto flex items-center justify-center">
-            <CheckCircle2 className="h-8 w-8" />
-          </div>
-          <h2 className="text-2xl font-bold text-slate-800 dark:text-white">Practice Phase Complete</h2>
-          <p className="text-xs sm:text-sm text-slate-600 dark:text-slate-300 max-w-md mx-auto">
-            You have completed all 5 practice trials. The next 20 trials are official assessment trials used for clinical psychomotor norming.
-          </p>
-          <button
-            onClick={() => {
-              setIsPractice(false);
-              setTrialIndex(0);
-              startNextTrial();
-            }}
-            className="btn-primary px-8 py-3 text-base shadow-md"
-          >
-            Begin 20 Test Trials
-          </button>
-        </Card>
-      )}
-
-      {/* Completed Results Screen */}
-      {gameState === 'completed' && resultsSummary && (
-        <Card className="p-6 sm:p-8 space-y-6">
-          <div className="text-center space-y-2 pb-6 border-b border-slate-100 dark:border-slate-800">
-            <h2 className="text-2xl sm:text-3xl font-bold text-slate-800 dark:text-white">
-              Visual Latency Protocol Completed
-            </h2>
-            <p className="text-xs text-slate-500">
-              Session #{sessionInfo?.sessionNumber || 1} • Protocol {sessionInfo?.formId || 'RT_1'} • 20 Normed Trials
-            </p>
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 text-center">
-              <Clock className="h-5 w-5 text-primary-500 mx-auto mb-1" />
-              <span className="text-[11px] text-slate-400 uppercase font-bold">Mean Latency</span>
-              <p className="text-2xl font-extrabold text-slate-800 dark:text-white">
-                {resultsSummary.avgReactionTimeMs} <span className="text-xs font-normal">ms</span>
-              </p>
-            </div>
-
-            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 text-center">
-              <Activity className="h-5 w-5 text-teal-500 mx-auto mb-1" />
-              <span className="text-[11px] text-slate-400 uppercase font-bold">Median Latency</span>
-              <p className="text-2xl font-extrabold text-slate-800 dark:text-white">
-                {resultsSummary.medianMs} <span className="text-xs font-normal">ms</span>
-              </p>
-            </div>
-
-            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 text-center">
-              <TrendingUp className="h-5 w-5 text-purple-500 mx-auto mb-1" />
-              <span className="text-[11px] text-slate-400 uppercase font-bold">Variability (SD)</span>
-              <p className="text-2xl font-extrabold text-slate-800 dark:text-white">
-                ± {resultsSummary.variabilityMs} <span className="text-xs font-normal">ms</span>
-              </p>
-            </div>
-
-            <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 text-center">
-              <AlertTriangle className="h-5 w-5 text-amber-500 mx-auto mb-1" />
-              <span className="text-[11px] text-slate-400 uppercase font-bold">Lapses &amp; False</span>
-              <p className="text-2xl font-extrabold text-slate-800 dark:text-white">
-                {resultsSummary.lapses} <span className="text-xs font-normal text-slate-400">/ {resultsSummary.falseStarts}</span>
-              </p>
-            </div>
-          </div>
-
-          {resultsSummary.normZScore !== undefined && (
-            <div className="p-3.5 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200 dark:border-slate-700 text-xs">
-              <span className="font-semibold text-slate-800 dark:text-slate-200">
-                NSHD Simple RT Norm z-Score: {resultsSummary.normZScore > 0 ? '+' : ''}{resultsSummary.normZScore} (Provisional)
-              </span>
-              <p className="text-slate-500 mt-0.5">
-                Benchmark: MRC National Survey of Health and Development (Mean: 278.7ms, SD: 42.9ms).
-              </p>
-            </div>
-          )}
-
-          {/* Trial Grid Breakdown */}
-          <div className="space-y-2">
-            <span className="text-xs font-bold uppercase text-slate-400">20 Test Trial Latency Sequence</span>
-            <div className="grid grid-cols-5 sm:grid-cols-10 gap-2">
-              {resultsSummary.trials.map((ms, idx) => (
-                <div
-                  key={idx}
-                  className={`p-2 rounded-lg text-center border text-xs font-semibold ${
-                    ms > 1000
-                      ? 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/40 dark:border-rose-900/40'
-                      : ms < 150
-                      ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:border-amber-900/40'
-                      : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700'
-                  }`}
-                >
-                  <span className="block text-[9px] text-slate-400">T{idx + 1}</span>
-                  {ms}ms
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="flex justify-between items-center pt-4 border-t border-slate-100 dark:border-slate-800">
-            <button onClick={initGameSession} className="btn-outline flex items-center gap-2 text-xs">
-              <RotateCcw className="h-4 w-4" /> Start New Rotated Session
-            </button>
-            <Link to="/dashboard/games" className="btn-primary text-xs px-6 py-2.5">
-              Back to Games Hub
-            </Link>
-          </div>
-        </Card>
-      )}
     </div>
   );
 }

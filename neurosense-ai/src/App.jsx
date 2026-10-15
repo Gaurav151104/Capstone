@@ -19,7 +19,7 @@ import RiskAssessment from './pages/Risk/RiskAssessment';
 import Recommendations from './pages/Therapy/Recommendations';
 import Profile from './pages/Profile/Profile';
 import CognitiveInterview from './pages/Interview/CognitiveInterview';
-import VoiceRecallGame from './pages/Games/VoiceRecallGame';
+import CognitiveConsentPage from './pages/Consent/CognitiveConsentPage';
 
 const ProtectedRoute = ({ children }) => {
   const { user } = useAuth();
@@ -50,6 +50,7 @@ export default function App() {
       <Route path="/" element={<Landing />} />
       <Route path="/login" element={<Login />} />
       <Route path="/register" element={<Register />} />
+      <Route path="/consent" element={<Navigate to="/dashboard/consent" replace />} />
 
       {/* Protected Routes */}
       <Route
@@ -59,13 +60,12 @@ export default function App() {
             <AuthLayout>
               <Routes>
                 <Route index element={<Dashboard />} />
+                <Route path="consent" element={<CognitiveConsentPage />} />
                 <Route path="games" element={<GamesIndex />} />
                 <Route path="games/memory" element={<MemoryGame />} />
                 <Route path="games/image-recall" element={<ImageRecallGame />} />
                 <Route path="games/recall" element={<WordRecall />} />
                 <Route path="games/reaction-time" element={<ReactionTimeGame />} />
-                <Route path="games/voice" element={<VoiceRecallGame />} />
-                <Route path="speech" element={<VoiceRecallGame />} />
                 
                 <Route path="interview" element={<CognitiveInterview />} />
                 <Route path="progress" element={<Progress />} />
@@ -73,6 +73,7 @@ export default function App() {
                 <Route path="risk" element={<RiskAssessment />} />
                 <Route path="therapy" element={<Recommendations />} />
                 <Route path="profile" element={<Profile />} />
+                <Route path="*" element={<Navigate to="/dashboard" replace />} />
               </Routes>
             </AuthLayout>
           </ProtectedRoute>

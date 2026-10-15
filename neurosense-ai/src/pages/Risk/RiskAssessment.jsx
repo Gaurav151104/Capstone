@@ -31,10 +31,10 @@ export default function RiskAssessment() {
       const consented = await gameService.getServerConsent();
       setConsentGranted(Boolean(consented));
 
-      if (consented && user?.id) {
-        const history = await gameService.getUserHistory(user.id);
+      if (consented) {
+        const history = await gameService.getUserHistory(user?.id);
         const rawMeasures = {
-          age: user.age || user.lifestyle?.Age
+          age: user?.age || user?.lifestyle?.Age || 60
         };
 
         if (history.reactions && history.reactions.length > 0) {
@@ -45,18 +45,23 @@ export default function RiskAssessment() {
 
         if (history.games && history.games.length > 0) {
           history.games.forEach(g => {
-            if (g.gameType === 'Word Recall') {
+            const gt = (g.gameType || '').toLowerCase();
+            if (gt.includes('word')) {
               if (g.immediateCorrect !== undefined) rawMeasures.word_recall_immediate_count = g.immediateCorrect;
+              else if (g.metadata?.immediateCorrect !== undefined) rawMeasures.word_recall_immediate_count = g.metadata.immediateCorrect;
               if (g.delayedCorrect !== undefined) rawMeasures.word_recall_delayed_count = g.delayedCorrect;
-            } else if (g.gameType === 'Image Recall' && g.score !== undefined) {
-              rawMeasures.image_recall_forward_span = g.score;
-            } else if (g.gameType === 'Memory Match' && g.errors !== undefined) {
-              rawMeasures.memory_match_errors = g.errors;
+              else if (g.metadata?.delayedCorrect !== undefined) rawMeasures.word_recall_delayed_count = g.metadata.delayedCorrect;
+            } else if (gt.includes('image')) {
+              if (g.metadata?.inOrderMatches !== undefined) rawMeasures.image_recall_forward_span = g.metadata.inOrderMatches;
+              else if (g.score !== undefined) rawMeasures.image_recall_forward_span = g.score;
+            } else if (gt.includes('memory')) {
+              if (g.errors !== undefined) rawMeasures.memory_match_errors = g.errors;
+              else if (g.metadata?.errors !== undefined) rawMeasures.memory_match_errors = g.metadata.errors;
             }
           });
         }
 
-        // Request normative scoring from backend
+        // Request normative scoring from backend or local transparent engine
         const scored = await gameService.scoreSession(rawMeasures);
         if (scored) {
           setCognitiveScoring(scored);
