@@ -1,125 +1,222 @@
 import { gameService } from './gameService';
+import { COGNITIVE_ASSESSMENT_CONFIG } from '../config/cognitiveConfig';
 
 export const riskService = {
+  /**
+   * Calculate transparent, multi-domain cognitive and clinical risk metrics
+   * Distinguishes clinical medical baseline, game-based performance, and speech biomarkers.
+   * Does NOT penalize uncompleted modules with zero scores.
+   */
   calculateRisk(user) {
-    if (!user) return { riskLevel: 'Unknown', score: 0, details: [] };
+    if (!user) {
+      return { 
+        riskLevel: 'Unknown', 
+        score: 0, 
+        details: [], 
+        cognitiveDomains: {},
+        isDiagnostic: false,
+        disclaimer: COGNITIVE_ASSESSMENT_CONFIG.clinicalNotice 
+      };
+    }
     
     const logs = gameService.getUserLogs() || [];
-    const hasGameData = logs.length > 0;
+    const reactionRecords = gameService.getReactionTimeHistory() || [];
     
     let baselineScore = 0;
     const details = [];
     const suggestions = [];
     
-    // 1. Age Factor
-    const age = parseInt(user.age) || 0;
-    if (age > 75) { baselineScore += 15; details.push({ label: 'Age Factor', impact: 'High', desc: 'Age > 75 increases baseline risk.' }); }
-    else if (age > 60) { baselineScore += 10; details.push({ label: 'Age Factor', impact: 'Moderate', desc: 'Age > 60 increases baseline risk.' }); }
+    // -------------------------------------------------------------------------
+    // 1. Clinical Baseline Factors (Medical & Demographic History)
+    // -------------------------------------------------------------------------
+    const age = parseInt(user.age) || parseInt(user.lifestyle?.Age) || 0;
+    if (age > 75) { 
+      baselineScore += 15; 
+      details.push({ label: 'Age Factor', impact: 'Moderate', desc: 'Age > 75 is an established non-modifiable epidemiological risk factor.' }); 
+    } else if (age > 60) { 
+      baselineScore += 10; 
+      details.push({ label: 'Age Factor', impact: 'Low', desc: 'Age > 60 noted as standard screening demographic baseline.' }); 
+    }
 
-    // 2. Medical Conditions (Checkboxes)
-    const conditions = user.conditions || {};
-    if (conditions.stroke) { baselineScore += 20; details.push({ label: 'Stroke History', impact: 'High', desc: 'Prior stroke is a significant clinical indicator.' }); }
-    if (conditions.heartDisease) { baselineScore += 10; }
-    if (conditions.diabetes) { baselineScore += 10; }
-    if (conditions.hypertension) { baselineScore += 5; }
-    if (conditions.depression) { baselineScore += 5; }
+    const conditions = (user && typeof user.conditions === 'object' && user.conditions !== null) ? user.conditions : {};
+    if (conditions.stroke) { 
+      baselineScore += 20; 
+      details.push({ label: 'Vascular / Stroke History', impact: 'High', desc: 'Prior cerebrovascular event is a primary clinical indicator.' }); 
+    }
+    if (conditions.heartDisease) baselineScore += 10;
+    if (conditions.diabetes) baselineScore += 10;
+    if (conditions.hypertension) baselineScore += 5;
+    if (conditions.depression) baselineScore += 5;
     
     const medCount = Object.values(conditions).filter(Boolean).length;
     if (medCount > 0 && !conditions.stroke) {
-      details.push({ label: 'Comorbidities', impact: medCount > 2 ? 'High' : 'Moderate', desc: `${medCount} indicated underlying medical conditions.` });
+      details.push({ 
+        label: 'Vascular Comorbidities', 
+        impact: medCount > 2 ? 'Moderate' : 'Low', 
+        desc: `${medCount} self-reported vascular risk factors.` 
+      });
     }
 
-    // 3. Family History
-    if (user.familyHistory === 'yes') {
+    if (user.familyHistory === 'yes' || user.familyHistory === 1 || user.lifestyle?.FamilyHistoryAlzheimers === 1) {
       baselineScore += 15;
-      details.push({ label: 'Family History', impact: 'High', desc: 'Genetic predisposition noted.' });
+      details.push({ label: 'Family History', impact: 'Moderate', desc: 'First-degree familial cognitive history reported.' });
     }
 
-    // 4. Lifestyle
-    const lifestyle = user.lifestyle || {};
-    if (lifestyle.sleep === 'poor') { 
+    // Lifestyle metrics
+    const lifestyle = (user && typeof user.lifestyle === 'object' && user.lifestyle !== null) ? user.lifestyle : {};
+    if (lifestyle.sleep === 'poor' || (lifestyle.SleepQuality && lifestyle.SleepQuality < 5)) { 
+      baselineScore += 8; 
+      suggestions.push({ title: 'Sleep Architecture', desc: 'Target 7-8 hours of regular sleep to promote glymphatic clearance and memory consolidation.' }); 
+    }
+    if (lifestyle.smoking === 'yes' || lifestyle.Smoking === 1) { 
       baselineScore += 10; 
-      suggestions.push({ title: 'Sleep Hygiene', desc: 'Target 7-8 hours of sleep to improve memory consolidation.' }); 
+      suggestions.push({ title: 'Smoking Cessation', desc: 'Cessation reduces neurovascular inflammation and microvascular damage.' });
     }
-    if (lifestyle.smoking === 'yes') { baselineScore += 10; suggestions.push({ title: 'Smoking Cessation', desc: 'Quitting smoking significantly improves vascular brain health.' });}
-    if (lifestyle.alcohol === 'yes') { baselineScore += 5; }
-    if (lifestyle.activity === 'low') { 
-      baselineScore += 10; 
-      suggestions.push({ title: 'Physical Activity', desc: 'Incorporate 30 mins of moderate aerobic exercise daily.' });
+    if (lifestyle.activity === 'low' || (lifestyle.PhysicalActivity !== undefined && lifestyle.PhysicalActivity < 3)) { 
+      baselineScore += 8; 
+      suggestions.push({ title: 'Aerobic Exercise', desc: 'Aim for 150 mins weekly of moderate physical exercise to stimulate neuroplasticity (BDNF).' });
     }
 
-    // 5. Cognitive Symptoms
-    const symptoms = user.symptoms || {};
-    let sympCount = 0;
-    if (symptoms.forgetfulness) { baselineScore += 10; sympCount++; }
-    if (symptoms.concentration) { baselineScore += 10; sympCount++; }
-    if (symptoms.speech) { baselineScore += 15; sympCount++; }
-    
-    if (sympCount > 0) {
-      details.push({ label: 'Subjective Symptoms', impact: 'High', desc: `${sympCount} self-reported cognitive concerns.` });
-      suggestions.push({ title: 'Medical Consultation', desc: 'Discuss your reported cognitive symptoms with a physician.' });
+    // -------------------------------------------------------------------------
+    // 2. Separate Game-Based Cognitive Assessment Metrics
+    // -------------------------------------------------------------------------
+    const cognitiveDomains = {
+      wordRecall: null,
+      imageRecall: null,
+      memoryMatch: null,
+      reactionTime: null
+    };
+
+    // Analyze Word Recall
+    const wordSessions = logs.filter(l => l.gameType && l.gameType.toLowerCase().includes('word'));
+    if (wordSessions.length > 0) {
+      const latest = wordSessions[wordSessions.length - 1];
+      cognitiveDomains.wordRecall = {
+        name: 'Verbal Retention',
+        status: 'Completed',
+        score: latest.score,
+        immediateCorrect: latest.metadata?.immediateCorrect,
+        delayedCorrect: latest.metadata?.delayedCorrect,
+        totalWords: latest.metadata?.totalWords || 10,
+        completedSessions: wordSessions.length
+      };
     }
 
-    // Combine Game Logs if available
-    let compositeScore = baselineScore;
-    
-    if (hasGameData) {
-      // Calculate average game performance (simple metric)
-      const avgGameScore = logs.reduce((acc, log) => acc + log.score, 0) / logs.length;
-      
-      if (avgGameScore < 40) {
-        compositeScore += 20; // Poor performance penalty
-        details.push({ label: 'Game Performance', impact: 'High', desc: 'Below average assessment scores.' });
-      } else if (avgGameScore > 80) {
-        compositeScore = Math.max(0, compositeScore - 20); // Excellent performance bonus deduction
-        details.push({ label: 'Game Performance', impact: 'Positive', desc: 'Above average assessment scores mitigate baseline risks.' });
+    // Analyze Image Recall
+    const imageSessions = logs.filter(l => l.gameType && l.gameType.toLowerCase().includes('image'));
+    if (imageSessions.length > 0) {
+      const latest = imageSessions[imageSessions.length - 1];
+      cognitiveDomains.imageRecall = {
+        name: 'Visuospatial Working Memory',
+        status: 'Completed',
+        score: latest.score,
+        forwardSpan: latest.metadata?.inOrderMatches,
+        completedSessions: imageSessions.length
+      };
+    }
+
+    // Analyze Memory Match
+    const memorySessions = logs.filter(l => l.gameType && l.gameType.toLowerCase().includes('memory'));
+    if (memorySessions.length > 0) {
+      const latest = memorySessions[memorySessions.length - 1];
+      cognitiveDomains.memoryMatch = {
+        name: 'Paired Associates',
+        status: 'Completed',
+        score: latest.score,
+        errors: latest.errors !== undefined ? latest.errors : latest.metadata?.errors,
+        moves: latest.metadata?.moves,
+        completedSessions: memorySessions.length
+      };
+    }
+
+    // Analyze Reaction Time
+    if (reactionRecords.length > 0) {
+      const latest = reactionRecords[reactionRecords.length - 1];
+      cognitiveDomains.reactionTime = {
+        name: 'Processing Speed',
+        status: 'Completed',
+        score: latest.score,
+        meanMs: latest.avgReactionTimeMs,
+        variabilityMs: latest.variabilityMs,
+        falseStarts: latest.falseStarts,
+        completedSessions: reactionRecords.length
+      };
+    }
+
+    // Count completed distinct cognitive modules
+    const completedModules = Object.values(cognitiveDomains).filter(d => d !== null);
+    const completedCount = completedModules.length;
+
+    let cognitiveRiskAdjustment = 0;
+    let cognitiveAssessmentStatus = 'INCOMPLETE';
+
+    if (completedCount >= 2) {
+      // Calculate average standardized score across COMPLETED modules only
+      const avgCognitiveScore = completedModules.reduce((acc, m) => acc + m.score, 0) / completedCount;
+
+      if (avgCognitiveScore < 45) {
+        cognitiveRiskAdjustment = +20;
+        details.push({ 
+          label: 'Cognitive Task Performance', 
+          impact: 'Moderate', 
+          desc: `Lower performance across ${completedCount} completed screening exercises.` 
+        });
+      } else if (avgCognitiveScore >= 80) {
+        cognitiveRiskAdjustment = -15; // Protective
+        details.push({ 
+          label: 'Cognitive Task Performance', 
+          impact: 'Protective', 
+          desc: `Strong performance across ${completedCount} screening exercises mitigates baseline risk.` 
+        });
       } else {
-        details.push({ label: 'Game Performance', impact: 'Neutral', desc: 'Consistent baseline assessment scores.' });
+        details.push({ 
+          label: 'Cognitive Task Performance', 
+          impact: 'Neutral', 
+          desc: `Consistent screening scores within normative expectations (${completedCount} exercises).` 
+        });
       }
-      
-      suggestions.push({ title: 'Continue Training', desc: 'Regular cognitive assessment stabilizes our predictive accuracy.' });
+      cognitiveAssessmentStatus = completedCount >= 3 ? 'ROBUST' : 'PROVISIONAL';
     } else {
-      suggestions.push({ title: 'Cognitive Baseline', desc: 'Play your first games on the Dashboard to generate a dynamic risk composite.' });
+      suggestions.push({ 
+        title: 'Cognitive Testing Incomplete', 
+        desc: `Complete at least 3 cognitive games to enable a multi-measure psychometric risk composite. (Currently: ${completedCount}/4 completed)` 
+      });
     }
 
-    // Thresholds
-    // Max theoretic baseline is around ~120
+    const compositeScore = Math.max(0, baselineScore + cognitiveRiskAdjustment);
+
+    // Non-diagnostic risk band assignment
     let riskLevel = 'Low';
     let explanation = '';
-    
+
     if (compositeScore >= 60) {
       riskLevel = 'High';
-      explanation = hasGameData 
-        ? "Based on your clinical baseline and supported by recent cognitive task assessments, you show high risk indicators."
-        : "Based strictly on your submitted medical history and lifestyle, you show high clinical risk indicators.";
+      explanation = completedCount >= 2
+        ? "Evaluation indicates higher relative risk based on medical history combined with preliminary cognitive assessment metrics."
+        : "Evaluation indicates higher relative risk based strictly on medical history and lifestyle survey indicators.";
     } else if (compositeScore >= 30) {
       riskLevel = 'Medium';
-      explanation = hasGameData 
-        ? "Your combined medical and activity profiles indicate moderate risk."
-        : "Based on your medical history and lifestyle, you show moderate risk indicators.";
+      explanation = completedCount >= 2
+        ? "Evaluation indicates moderate risk across reported health factors and completed cognitive exercises."
+        : "Evaluation indicates moderate baseline risk based on reported clinical factors.";
     } else {
       riskLevel = 'Low';
-      explanation = hasGameData 
-        ? "Your clinical profile and strong assessment scores reflect low risk."
-        : "Your medical history indicates a low probability baseline risk.";
-    }
-    
-    // Fill up empty details if user is completely healthy
-    if (details.length === 0) {
-      details.push({ label: 'Clinical Health', impact: 'Positive', desc: 'No significant risk factors reported in survey.' });
-    }
-
-    if (suggestions.length === 0) {
-      suggestions.push({ title: 'Maintain Lifestyle', desc: 'Keep up your current healthy habits and consider preventative monitoring.' });
+      explanation = "Evaluation indicates lower relative risk across screening parameters.";
     }
 
     return {
       riskLevel,
       score: compositeScore,
-      isComposite: hasGameData,
-      explanation,
+      baselineScore,
+      cognitiveRiskAdjustment,
+      completedModulesCount: completedCount,
+      cognitiveAssessmentStatus,
+      cognitiveDomains,
       details,
-      suggestions
+      suggestions,
+      explanation,
+      isDiagnostic: false,
+      disclaimer: COGNITIVE_ASSESSMENT_CONFIG.clinicalNotice
     };
   }
 };

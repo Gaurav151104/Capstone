@@ -1,6 +1,5 @@
 /* eslint-disable react-hooks/purity */
 import React, { useState, useRef, useEffect } from 'react';
-import { Link } from 'react-router-dom';
 import { 
   Zap, 
   ArrowLeft, 
@@ -10,395 +9,453 @@ import {
   Clock, 
   Activity, 
   TrendingUp,
-  Gamepad2
+  LayoutDashboard,
+  ShieldCheck,
+  Info
 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import Card from '../../components/Card';
-import DisclaimerNote from '../../components/DisclaimerNote';
 import { gameService } from '../../services/gameService';
-
-const TOTAL_TRIALS = 8;
+import { 
+  measureDeviceAndRefreshRate, 
+  generateReactionTimeISIs, 
+  calculateReactionTimeStats 
+} from '../../utils/cognitivePools';
+import CognitiveConsentModal from '../../components/CognitiveConsentModal';
+import { COGNITIVE_ASSESSMENT_CONFIG } from '../../config/cognitiveConfig';
 
 export default function ReactionTimeGame() {
-  // Game states: 'intro' | 'waiting' | 'ready' | 'trial_result' | 'early_click' | 'completed'
+  const navigate = useNavigate();
+
+  // Game states: 'intro' | 'practice_intro' | 'waiting' | 'ready' | 'trial_result' | 'early_click' | 'practice_finished' | 'completed'
   const [gameState, setGameState] = useState('intro');
-  const [currentTrial, setCurrentTrial] = useState(1);
-  const [reactionTimes, setReactionTimes] = useState([]);
+  const [sessionInfo, setSessionInfo] = useState(null);
+  const [isPractice, setIsPractice] = useState(true);
+  const [trialIndex, setTrialIndex] = useState(0);
+
+  const [practiceTimes, setPracticeTimes] = useState([]);
+  const [testTimes, setTestTimes] = useState([]);
   const [falseStarts, setFalseStarts] = useState(0);
   const [lastReaction, setLastReaction] = useState(0);
   const [resultsSummary, setResultsSummary] = useState(null);
+  const [deviceInfo, setDeviceInfo] = useState(null);
+  const [isStarting, setIsStarting] = useState(false);
+  const [consentOpen, setConsentOpen] = useState(false);
+  const [normZScore, setNormZScore] = useState(null);
 
   const timeoutRef = useRef(null);
   const cueTimeRef = useRef(0);
+  const hasSavedRef = useRef(false);
 
-  // Clear timeout on unmount
+  const numPractice = COGNITIVE_ASSESSMENT_CONFIG.reactionTime.numPracticeTrials || 3;
+  const numTest = COGNITIVE_ASSESSMENT_CONFIG.reactionTime.numTestTrials || 10;
+
   useEffect(() => {
+    measureDeviceAndRefreshRate().then(info => setDeviceInfo(info));
     return () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
   }, []);
 
+  const initGameSession = async () => {
+    if (isStarting) return;
+    setIsStarting(true);
+    hasSavedRef.current = false;
+
+    // Check consent status
+    const hasConsent = await gameService.getServerConsent();
+    if (!hasConsent) {
+      setConsentOpen(true);
+      setIsStarting(false);
+      return;
+    }
+
+    try {
+      let session = null;
+      try {
+        session = await gameService.fetchNextSessionItems('Reaction Time', {
+          num_practice: numPractice,
+          num_test: numTest
+        });
+      } catch (e) {
+        console.warn('Backend ISI sync unavailable, generating local randomized delay sequence:', e);
+      }
+
+      const minDelay = COGNITIVE_ASSESSMENT_CONFIG.reactionTime.minDelayMs || 1500;
+      const maxDelay = COGNITIVE_ASSESSMENT_CONFIG.reactionTime.maxDelayMs || 3500;
+
+      if (!session || !session.testIsis || session.testIsis.length < numTest) {
+        session = {
+          game: 'Reaction Time',
+          formId: 'RT_PROTOCOL_1',
+          practiceIsis: generateReactionTimeISIs(numPractice, minDelay, maxDelay),
+          testIsis: generateReactionTimeISIs(numTest, minDelay, maxDelay),
+          sessionId: `sess_rt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+        };
+      }
+
+      setSessionInfo(session);
+      setIsPractice(true);
+      setTrialIndex(0);
+      setPracticeTimes([]);
+      setTestTimes([]);
+      setFalseStarts(0);
+      setLastReaction(0);
+      setResultsSummary(null);
+      setNormZScore(null);
+      setGameState('practice_intro');
+    } catch (e) {
+      console.error('Failed to init Reaction Time session:', e);
+    } finally {
+      setIsStarting(false);
+    }
+  };
+
   const startNextTrial = () => {
+    const isis = isPractice ? sessionInfo?.practiceIsis : sessionInfo?.testIsis;
+    const fallbackDelay = Math.round(1500 + Math.random() * 2000);
+    const isiMs = (isis && isis[trialIndex]) ? isis[trialIndex] : fallbackDelay;
+
     setGameState('waiting');
 
-    // Randomized delay between 1500ms and 4200ms
-    const randomDelay = Math.floor(Math.random() * 2700) + 1500;
-
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
     timeoutRef.current = setTimeout(() => {
       cueTimeRef.current = performance.now();
       setGameState('ready');
-    }, randomDelay);
+    }, isiMs);
   };
 
   const handleUserAction = () => {
     if (gameState === 'waiting') {
-      // False start! Clicked too early
+      // Premature click before stimulus turned green!
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
-      setFalseStarts((prev) => prev + 1);
+      setFalseStarts(prev => prev + 1);
       setGameState('early_click');
     } else if (gameState === 'ready') {
-      // Valid reaction
       const clickTime = performance.now();
-      const elapsed = Math.round(clickTime - cueTimeRef.current);
+      const rawElapsed = Math.round(clickTime - cueTimeRef.current);
+      const elapsed = Math.max(10, rawElapsed);
 
-      // Guard against client glitch / impossible values
-      const validElapsed = Math.max(10, elapsed);
+      setLastReaction(elapsed);
 
-      const updated = [...reactionTimes, validElapsed];
-      setReactionTimes(updated);
-      setLastReaction(validElapsed);
+      if (isPractice) {
+        const updated = [...practiceTimes, elapsed];
+        setPracticeTimes(updated);
+        const nextIdx = trialIndex + 1;
+        setTrialIndex(nextIdx);
 
-      if (updated.length >= TOTAL_TRIALS) {
-        finishGame(updated, falseStarts);
+        if (nextIdx >= numPractice) {
+          setGameState('practice_finished');
+        } else {
+          setGameState('trial_result');
+        }
       } else {
-        setGameState('trial_result');
+        const updated = [...testTimes, elapsed];
+        setTestTimes(updated);
+        const nextIdx = trialIndex + 1;
+        setTrialIndex(nextIdx);
+
+        if (nextIdx >= numTest) {
+          finishGame(updated, falseStarts);
+        } else {
+          setGameState('trial_result');
+        }
       }
     }
   };
 
-  const finishGame = async (allTimes, totalFalseStarts) => {
-    // 1. Calculate Average Reaction Time
-    const sum = allTimes.reduce((a, b) => a + b, 0);
-    const avg = Math.round(sum / allTimes.length);
+  const finishGame = async (finalTestTimes, totalFalseStarts) => {
+    if (hasSavedRef.current) return;
+    hasSavedRef.current = true;
 
-    // 2. Calculate Variability (Standard Deviation)
-    const variance = allTimes.reduce((acc, val) => acc + Math.pow(val - avg, 2), 0) / allTimes.length;
-    const stdDev = Math.round(Math.sqrt(variance));
-
-    // 3. Compute 0-100 score
-    // Normal healthy adult visual reaction time is 220ms-350ms
-    let baseScore = Math.max(10, Math.min(100, Math.round(135 - (avg * 0.18))));
-    const falseStartPenalty = Math.min(totalFalseStarts * 4, 20);
-    const finalScore = Math.max(10, baseScore - falseStartPenalty);
-
-    // 4. Non-diagnostic band
-    let band = 'Optimal Speed & Focus Band';
-    let bandColor = 'text-emerald-600 dark:text-emerald-400';
-    let bandBg = 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800';
-    let bandDesc = 'Quick stimulus response and consistent attention across repeated trials.';
-
-    if (avg > 480 || totalFalseStarts >= 3) {
-      band = 'Extended Latency & Variability Band';
-      bandColor = 'text-amber-600 dark:text-amber-400';
-      bandBg = 'bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800';
-      bandDesc = 'Extended reaction times or heightened variability noted across trials. Continuing attention exercises and regular tracking advised.';
-    } else if (avg > 350) {
-      band = 'Typical Processing Speed Band';
-      bandColor = 'text-blue-600 dark:text-blue-400';
-      bandBg = 'bg-blue-50 dark:bg-blue-950/40 border-blue-200 dark:border-blue-800';
-      bandDesc = 'Response latencies within standard cognitive and psychomotor processing parameters.';
-    }
-
-    const summary = {
-      avgReactionTimeMs: avg,
-      variabilityMs: stdDev,
-      falseStarts: totalFalseStarts,
-      score: finalScore,
-      band,
-      bandColor,
-      bandBg,
-      bandDesc,
-      trials: allTimes
-    };
-
-    setResultsSummary(summary);
     setGameState('completed');
 
-    // Save session
-    await gameService.saveReactionTimeSession(summary);
+    const stats = calculateReactionTimeStats(
+      finalTestTimes,
+      COGNITIVE_ASSESSMENT_CONFIG.reactionTime.prematureClickThresholdMs || 150,
+      COGNITIVE_ASSESSMENT_CONFIG.reactionTime.lapseThresholdMs || 1000
+    );
+
+    // Score calculation: baseline 250ms = 100%, 500ms = 50%
+    const score = Math.max(10, Math.min(100, Math.round(100 - ((stats.meanMs - 220) * 0.25) - (totalFalseStarts * 5))));
+
+    const summary = {
+      ...stats,
+      score,
+      falseStarts: totalFalseStarts,
+      trialsCount: finalTestTimes.length
+    };
+    setResultsSummary(summary);
+
+    const sessionId = sessionInfo?.sessionId || `sess_rt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+    // Save session to server and local storage
+    await gameService.saveReactionTimeSession({
+      sessionId,
+      avgReactionTimeMs: stats.meanMs,
+      variabilityMs: stats.variabilityMs,
+      falseStarts: totalFalseStarts,
+      trials: finalTestTimes,
+      score,
+      medianMs: stats.medianMs,
+      lapses: stats.lapses,
+      anticipations: stats.anticipations,
+      formId: sessionInfo?.formId || 'RT_PROTOCOL_1',
+      deviceInfo: deviceInfo || {}
+    });
+
+    // Score against normative UK Biobank simple visual reaction time distribution
+    const normReport = await gameService.scoreSession({
+      reaction_time_mean_ms: stats.meanMs,
+      reaction_time_sd_ms: stats.variabilityMs
+    });
+
+    if (normReport?.per_measure_z?.reaction_time_mean_ms !== undefined) {
+      setNormZScore(normReport.per_measure_z.reaction_time_mean_ms);
+    }
   };
 
-  const handleReset = () => {
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    setCurrentTrial(1);
-    setReactionTimes([]);
-    setFalseStarts(0);
-    setLastReaction(0);
-    setResultsSummary(null);
-    setGameState('intro');
+  const startFormalTest = () => {
+    setIsPractice(false);
+    setTrialIndex(0);
+    setTestTimes([]);
+    startNextTrial();
   };
+
+  const currentTotal = isPractice ? numPractice : numTest;
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6 animate-in fade-in duration-300">
-      {/* Top Navigation */}
-      <div className="flex items-center justify-between pb-2 border-b border-slate-200 dark:border-slate-800">
-        <div className="flex items-center space-x-3">
-          <Link
-            to="/dashboard/games"
-            className="p-2 rounded-lg text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+    <div className="flex flex-col h-[calc(100vh-8rem)] max-w-3xl mx-auto overflow-hidden animate-in fade-in duration-500">
+      <CognitiveConsentModal
+        isOpen={consentOpen}
+        onConsentGranted={() => {
+          setConsentOpen(false);
+          initGameSession();
+        }}
+        onCancel={() => setConsentOpen(false)}
+      />
+
+      {/* Top Header & Navigation */}
+      <div className="flex items-center justify-between mb-4">
+        <button 
+          onClick={() => navigate('/dashboard/games')}
+          className="flex items-center text-slate-500 hover:text-primary-600 dark:hover:text-primary-400 transition-colors font-medium text-sm"
+        >
+          <ArrowLeft className="h-4 w-4 mr-2" /> Back to Games
+        </button>
+
+        <span className="text-xs text-slate-400 font-medium">
+          Simple Visual Reaction Time (SRT) Protocol
+        </span>
+      </div>
+
+      {/* Control Bar */}
+      <div className="flex flex-col sm:flex-row justify-between items-center bg-white dark:bg-slate-900 p-4 rounded-xl shadow-sm border border-slate-100 dark:border-slate-800 flex-shrink-0 mb-4 z-10 transition-colors duration-200">
+        <div>
+          <h2 className="text-xl font-bold flex items-center text-slate-800 dark:text-white">
+            <Zap className="mr-2 h-6 w-6 text-amber-500" /> Reaction Time
+          </h2>
+          <p className="text-xs text-muted">
+            {isPractice ? `Practice Phase • Trial ${trialIndex + 1} of ${numPractice}` : `Formal Assessment • Trial ${trialIndex + 1} of ${numTest}`}
+          </p>
+        </div>
+        
+        <div className="flex items-center space-x-3 mt-3 sm:mt-0">
+          {falseStarts > 0 && (
+            <span className="text-xs font-semibold px-2.5 py-1 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded-lg">
+              False Starts: {falseStarts}
+            </span>
+          )}
+
+          <button 
+            onClick={initGameSession} 
+            disabled={isStarting}
+            className="btn-primary flex items-center py-1.5 px-4 text-xs disabled:opacity-50"
           >
-            <ArrowLeft className="h-5 w-5" />
-          </Link>
-          <div>
-            <h1 className="text-2xl font-bold text-slate-800 dark:text-white flex items-center gap-2">
-              <Zap className="h-6 w-6 text-amber-500" />
-              Reaction Time & Attention Test
-            </h1>
-            <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400">
-              Measure visual stimulus response latency, stability, and focus consistency
-            </p>
-          </div>
+            {gameState !== 'intro' ? <RotateCcw className="h-3.5 w-3.5 mr-1.5" /> : <Zap className="h-3.5 w-3.5 mr-1.5" />}
+            {isStarting ? 'Starting...' : (gameState !== 'intro' ? 'Restart Protocol' : 'Start Test')}
+          </button>
         </div>
       </div>
 
-      {/* Persistent Non-Diagnostic Disclaimer */}
-      <DisclaimerNote compact />
-
-      {/* Screen 1: Intro */}
-      {gameState === 'intro' && (
-        <Card className="p-8">
-          <div className="max-w-xl mx-auto text-center space-y-6">
-            <div className="h-20 w-20 rounded-2xl bg-amber-50 dark:bg-amber-950/40 text-amber-500 flex items-center justify-center mx-auto border border-amber-200 dark:border-amber-900/50 shadow-sm">
-              <Zap className="h-10 w-10" />
+      {/* Main Interactive Stimulus Canvas */}
+      <div className="flex-1 min-h-0 flex items-center justify-center relative">
+        {/* Intro */}
+        {gameState === 'intro' && (
+          <div className="w-full h-full max-h-96 flex flex-col items-center justify-center bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-8 text-center rounded-2xl shadow-sm transition-colors">
+            <div className="h-16 w-16 rounded-2xl bg-amber-50 dark:bg-amber-900/30 text-amber-500 flex items-center justify-center mb-4">
+              <Zap className="h-8 w-8" />
             </div>
-
-            <div className="space-y-2">
-              <h2 className="text-2xl font-bold text-slate-800 dark:text-white">
-                Stimulus Response Assessment
-              </h2>
-              <p className="text-sm sm:text-base text-slate-600 dark:text-slate-300 leading-relaxed">
-                When the trial starts, the box will turn <strong>red</strong> with a waiting message.
-                As soon as it turns <span className="text-emerald-600 font-bold">bright green</span>, click or tap anywhere on the screen as fast as you can!
-              </p>
+            <h3 className="text-xl font-bold text-slate-800 dark:text-white">
+              Simple Visual Reaction Time (SRT)
+            </h3>
+            <p className="text-muted mt-2 text-xs sm:text-sm max-w-md leading-relaxed">
+              When the screen turns <strong className="text-emerald-600 dark:text-emerald-400">GREEN</strong>, tap or click anywhere as fast as you can. Do not click early while the screen is red.
+            </p>
+            <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-3 mt-4 text-xs text-slate-600 dark:text-slate-300 max-w-md flex items-center gap-2 text-left">
+              <ShieldCheck className="h-5 w-5 text-emerald-500 shrink-0" />
+              <span>Includes 3 practice trials followed by 10 calibrated test trials with variable 1.5–3.5s foreperiods.</span>
             </div>
-
-            <div className="grid grid-cols-3 gap-3 text-left">
-              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 text-center">
-                <Clock className="h-4 w-4 text-primary-500 mx-auto mb-1" />
-                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">8 Trials</p>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">Repeated measures</p>
-              </div>
-              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 text-center">
-                <Activity className="h-4 w-4 text-teal-500 mx-auto mb-1" />
-                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">Latency</p>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">Speed in milliseconds</p>
-              </div>
-              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 text-center">
-                <TrendingUp className="h-4 w-4 text-purple-500 mx-auto mb-1" />
-                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">Stability</p>
-                <p className="text-[11px] text-slate-500 dark:text-slate-400">Variability & attention</p>
-              </div>
-            </div>
-
-            <button
-              onClick={startNextTrial}
-              className="btn-primary text-base px-8 py-3 w-full sm:w-auto shadow-md hover:shadow-lg transition-all"
+            <button 
+              onClick={initGameSession} 
+              disabled={isStarting}
+              className="btn-primary px-8 py-2.5 mt-6 text-sm flex items-center"
             >
-              Start Trial 1 of {TOTAL_TRIALS}
+              <Zap className="h-4 w-4 mr-2" />
+              {isStarting ? 'Calibrating...' : 'Begin Protocol'}
             </button>
           </div>
-        </Card>
-      )}
+        )}
 
-      {/* Screen 2: Interactive Click Zone (Waiting or Ready) */}
-      {(gameState === 'waiting' || gameState === 'ready') && (
-        <div
-          onClick={handleUserAction}
-          className={`h-[400px] rounded-3xl flex flex-col items-center justify-center cursor-pointer select-none transition-colors duration-150 p-6 text-center shadow-lg ${
-            gameState === 'ready'
-              ? 'bg-emerald-500 text-white animate-pulse'
-              : 'bg-rose-500 dark:bg-rose-600 text-white'
-          }`}
-        >
-          <div className="space-y-3">
-            <span className="text-xs sm:text-sm font-semibold uppercase tracking-wider bg-black/20 px-3 py-1 rounded-full inline-block">
-              Trial {reactionTimes.length + 1} of {TOTAL_TRIALS}
+        {/* Practice Intro */}
+        {gameState === 'practice_intro' && (
+          <div className="w-full h-full max-h-96 flex flex-col items-center justify-center bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-8 text-center rounded-2xl shadow-sm space-y-4">
+            <span className="text-xs font-bold text-amber-600 uppercase tracking-widest bg-amber-50 dark:bg-amber-950/40 px-3 py-1 rounded-full">
+              Familiarization Phase
             </span>
-            <h2 className="text-3xl sm:text-5xl font-black tracking-tight">
-              {gameState === 'ready' ? '⚡ TAP / CLICK NOW!' : '⏳ WAIT FOR GREEN...'}
-            </h2>
-            <p className="text-sm sm:text-base opacity-90 max-w-sm mx-auto">
-              {gameState === 'ready'
-                ? 'Click as quickly as possible!'
-                : 'Do not click yet or a false start will be recorded.'}
+            <h3 className="text-xl font-bold text-slate-800 dark:text-white">
+              Practice Trials ({numPractice} trials)
+            </h3>
+            <p className="text-muted text-xs sm:text-sm max-w-md leading-relaxed">
+              Let's do {numPractice} quick practice trials so you can get used to the timing. These will not count towards your formal score.
             </p>
+            <button onClick={startNextTrial} className="btn-primary px-8 py-2.5 text-sm">
+              Start Practice 1 of {numPractice}
+            </button>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Screen 3: False start warning */}
-      {gameState === 'early_click' && (
-        <div className="h-[400px] rounded-3xl bg-amber-500 text-white flex flex-col items-center justify-center p-6 text-center space-y-4 shadow-lg">
-          <AlertTriangle className="h-16 w-16" />
-          <h2 className="text-3xl sm:text-4xl font-extrabold">Too Early!</h2>
-          <p className="text-sm sm:text-base max-w-md opacity-95">
-            You clicked before the screen turned green. Take a breath and wait for the green cue.
-          </p>
-          <button
-            onClick={startNextTrial}
-            className="px-6 py-3 bg-white text-amber-700 font-bold rounded-xl shadow hover:bg-amber-50 transition-colors"
+        {/* Waiting State (Red Screen) */}
+        {gameState === 'waiting' && (
+          <div 
+            onClick={handleUserAction}
+            className="w-full h-full rounded-2xl bg-rose-600 hover:bg-rose-700 flex flex-col items-center justify-center text-white cursor-pointer select-none p-6 text-center transition-colors shadow-inner"
           >
-            Try Trial Again
-          </button>
-        </div>
-      )}
-
-      {/* Screen 4: Intermediate trial result */}
-      {gameState === 'trial_result' && (
-        <Card className="p-8 text-center space-y-6">
-          <div className="space-y-2">
-            <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-              Trial {reactionTimes.length} of {TOTAL_TRIALS} Completed
+            <Clock className="h-16 w-16 mb-4 animate-pulse opacity-80" />
+            <h3 className="text-3xl font-extrabold tracking-wide">WAIT FOR GREEN...</h3>
+            <p className="text-sm opacity-90 mt-2">Do not tap yet!</p>
+            <span className="text-xs opacity-75 mt-4">
+              Trial {trialIndex + 1} of {currentTotal} {isPractice ? '(Practice)' : ''}
             </span>
-            <div className="text-5xl font-extrabold text-slate-800 dark:text-white">
-              {lastReaction} <span className="text-2xl font-normal text-slate-500">ms</span>
+          </div>
+        )}
+
+        {/* Ready State (Green Screen) */}
+        {gameState === 'ready' && (
+          <div 
+            onClick={handleUserAction}
+            className="w-full h-full rounded-2xl bg-emerald-500 hover:bg-emerald-600 flex flex-col items-center justify-center text-white cursor-pointer select-none p-6 text-center transition-colors animate-in zoom-in-95 duration-100 shadow-2xl"
+          >
+            <Zap className="h-20 w-20 mb-4 animate-bounce" />
+            <h3 className="text-4xl sm:text-5xl font-black tracking-wider">TAP NOW!</h3>
+            <span className="text-xs opacity-80 mt-4 font-semibold">Click or tap anywhere!</span>
+          </div>
+        )}
+
+        {/* Premature / Early Click */}
+        {gameState === 'early_click' && (
+          <div className="w-full h-full max-h-96 flex flex-col items-center justify-center bg-rose-50 dark:bg-rose-950/20 rounded-2xl border-2 border-rose-200 dark:border-rose-900/40 p-8 text-center space-y-4">
+            <AlertTriangle className="h-14 w-14 text-rose-500" />
+            <h3 className="text-2xl font-bold text-rose-700 dark:text-rose-400">Too Early!</h3>
+            <p className="text-sm text-slate-600 dark:text-slate-300 max-w-sm">
+              You clicked before the stimulus turned green. Premature clicks count as a false start. Wait until the color changes.
+            </p>
+            <button onClick={startNextTrial} className="btn-primary bg-rose-600 hover:bg-rose-700 px-8 py-2 text-sm">
+              Retry Trial
+            </button>
+          </div>
+        )}
+
+        {/* Single Trial Result */}
+        {gameState === 'trial_result' && (
+          <div className="w-full h-full max-h-96 flex flex-col items-center justify-center bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-8 text-center space-y-4">
+            <span className="text-xs text-muted uppercase font-bold">
+              Trial {trialIndex} of {currentTotal} {isPractice ? '(Practice)' : ''}
+            </span>
+            <div className="text-5xl font-black text-slate-800 dark:text-white">
+              {lastReaction} <span className="text-2xl text-slate-400 font-normal">ms</span>
             </div>
-            <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400">
-              {lastReaction < 280 ? 'Lightning fast reflex!' : lastReaction < 380 ? 'Solid response time.' : 'Good trial.'}
+            <p className="text-xs text-slate-500">
+              {lastReaction < 200 ? '⚡ Outstanding reaction speed!' : lastReaction < 350 ? '✓ Good, steady response.' : 'Tap as soon as green appears.'}
             </p>
+            <button onClick={startNextTrial} className="btn-primary px-8 py-2 text-sm">
+              Next Trial ({trialIndex + 1}/{currentTotal})
+            </button>
           </div>
+        )}
 
-          {/* Mini progress dots */}
-          <div className="flex justify-center items-center gap-2">
-            {Array.from({ length: TOTAL_TRIALS }).map((_, i) => (
-              <div
-                key={i}
-                className={`h-3 w-3 rounded-full transition-all ${
-                  i < reactionTimes.length
-                    ? 'bg-emerald-500 scale-110'
-                    : 'bg-slate-200 dark:bg-slate-700'
-                }`}
-              />
-            ))}
+        {/* Practice Finished */}
+        {gameState === 'practice_finished' && (
+          <div className="w-full h-full max-h-96 flex flex-col items-center justify-center bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-8 text-center space-y-4">
+            <CheckCircle2 className="h-14 w-14 text-emerald-500" />
+            <h3 className="text-2xl font-bold text-slate-800 dark:text-white">
+              Practice Completed!
+            </h3>
+            <p className="text-sm text-slate-600 dark:text-slate-300 max-w-sm leading-relaxed">
+              You are ready for the formal test. There will be {numTest} trials with randomized delays. Stay focused on the center.
+            </p>
+            <button onClick={startFormalTest} className="btn-primary px-8 py-2.5 text-sm">
+              Begin Formal Test (1 of {numTest})
+            </button>
           </div>
+        )}
 
-          <button
-            onClick={() => {
-              setCurrentTrial((prev) => prev + 1);
-              startNextTrial();
-            }}
-            className="btn-primary text-base px-8 py-3 w-full sm:w-auto shadow-md"
-          >
-            Next Trial ({currentTrial + 1}/{TOTAL_TRIALS})
-          </button>
-        </Card>
-      )}
+        {/* Final Completion Summary */}
+        {gameState === 'completed' && resultsSummary && (
+          <div className="w-full h-full max-h-96 flex flex-col items-center justify-center bg-emerald-50/70 dark:bg-emerald-950/20 rounded-2xl border-2 border-emerald-100 dark:border-emerald-900/40 p-6 text-center transition-colors">
+            <div className="h-12 w-12 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mb-2">
+              <CheckCircle2 className="h-7 w-7" />
+            </div>
+            <h3 className="text-2xl font-bold text-emerald-700 dark:text-emerald-400 mb-1">
+              Assessment Completed!
+            </h3>
 
-      {/* Screen 5: Completed / Detailed Results */}
-      {gameState === 'completed' && resultsSummary && (
-        <div className="space-y-6">
-          <Card className="p-6 sm:p-8">
-            <div className="space-y-6">
-              {/* Header */}
-              <div className="text-center space-y-2 pb-6 border-b border-slate-100 dark:border-slate-800">
-                <div className="h-14 w-14 rounded-full bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-400 flex items-center justify-center mx-auto">
-                  <CheckCircle2 className="h-8 w-8" />
-                </div>
-                <h2 className="text-2xl sm:text-3xl font-bold text-slate-800 dark:text-white">
-                  Reaction & Attention Complete
-                </h2>
-                <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400">
-                  Visual stimulus responses compiled across all 8 trials
+            <div className="grid grid-cols-3 gap-3 my-3 max-w-md w-full">
+              <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-emerald-200 dark:border-emerald-800">
+                <span className="text-[10px] text-muted uppercase font-bold">Mean RT</span>
+                <p className="text-lg font-extrabold text-slate-800 dark:text-white">
+                  {resultsSummary.meanMs} <span className="text-xs font-normal">ms</span>
                 </p>
               </div>
-
-              {/* Score Banner */}
-              <div className={`p-6 rounded-2xl border ${resultsSummary.bandBg} text-center space-y-2`}>
-                <span className="text-xs uppercase tracking-wider font-semibold text-slate-500 dark:text-slate-400">
-                  Average Response Latency
-                </span>
-                <div className="text-5xl font-black text-slate-900 dark:text-white">
-                  {resultsSummary.avgReactionTimeMs} <span className="text-2xl font-normal text-slate-500">ms</span>
-                </div>
-                <div className={`text-base font-bold ${resultsSummary.bandColor}`}>
-                  {resultsSummary.band} (Score: {resultsSummary.score}/100)
-                </div>
-                <p className="text-xs sm:text-sm text-slate-700 dark:text-slate-300 max-w-lg mx-auto">
-                  {resultsSummary.bandDesc}
+              <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-emerald-200 dark:border-emerald-800">
+                <span className="text-[10px] text-muted uppercase font-bold">Variability (SD)</span>
+                <p className="text-lg font-extrabold text-slate-800 dark:text-white">
+                  ±{resultsSummary.variabilityMs} <span className="text-xs font-normal">ms</span>
                 </p>
               </div>
-
-              {/* Metrics Grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 text-center">
-                  <Clock className="h-5 w-5 text-primary-500 mx-auto mb-1" />
-                  <span className="text-xs text-slate-500 dark:text-slate-400">Average Latency</span>
-                  <p className="text-xl font-bold text-slate-800 dark:text-white">
-                    {resultsSummary.avgReactionTimeMs} ms
-                  </p>
-                </div>
-
-                <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 text-center">
-                  <Activity className="h-5 w-5 text-purple-500 mx-auto mb-1" />
-                  <span className="text-xs text-slate-500 dark:text-slate-400">Variability (Std Dev)</span>
-                  <p className="text-xl font-bold text-slate-800 dark:text-white">
-                    ± {resultsSummary.variabilityMs} ms
-                  </p>
-                </div>
-
-                <div className="p-4 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-800 text-center">
-                  <AlertTriangle className="h-5 w-5 text-amber-500 mx-auto mb-1" />
-                  <span className="text-xs text-slate-500 dark:text-slate-400">Early Clicks</span>
-                  <p className="text-xl font-bold text-slate-800 dark:text-white">
-                    {resultsSummary.falseStarts}
-                  </p>
-                </div>
-              </div>
-
-              {/* Trial History Bar Chart preview */}
-              <div className="space-y-2">
-                <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-300">
-                  Individual Trial Breakdown
-                </h4>
-                <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
-                  {resultsSummary.trials.map((time, idx) => (
-                    <div
-                      key={idx}
-                      className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-center border border-slate-200 dark:border-slate-700"
-                    >
-                      <span className="block text-[10px] text-slate-400 font-medium">T{idx + 1}</span>
-                      <span className="block text-xs font-bold text-slate-800 dark:text-slate-200">{time}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Full Disclaimer */}
-              <DisclaimerNote />
-
-              {/* Actions */}
-              <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-4 border-t border-slate-100 dark:border-slate-800">
-                <button
-                  onClick={handleReset}
-                  className="btn-outline w-full sm:w-auto flex items-center justify-center space-x-2"
-                >
-                  <RotateCcw className="h-4 w-4" />
-                  <span>Play Again</span>
-                </button>
-
-                <div className="flex space-x-3 w-full sm:w-auto">
-                  <Link
-                    to="/dashboard/games"
-                    className="btn-primary w-full sm:w-auto text-center flex items-center justify-center gap-2"
-                  >
-                    <Gamepad2 className="h-4 w-4" />
-                    <span>Back to Games</span>
-                  </Link>
-                </div>
+              <div className="bg-white dark:bg-slate-900 p-2.5 rounded-xl border border-emerald-200 dark:border-emerald-800">
+                <span className="text-[10px] text-muted uppercase font-bold">False Starts</span>
+                <p className="text-lg font-extrabold text-rose-600 dark:text-rose-400">
+                  {resultsSummary.falseStarts}
+                </p>
               </div>
             </div>
-          </Card>
-        </div>
-      )}
+
+            {normZScore !== null && (
+              <p className="text-xs text-slate-600 dark:text-slate-400 font-medium">
+                Normative SRT z-Score: {normZScore > 0 ? '+' : ''}{normZScore} (Provisional UK Biobank Norm)
+              </p>
+            )}
+
+            <div className="flex items-center gap-1.5 text-[11px] text-slate-500 mt-2 max-w-md text-center">
+              <Info className="h-3.5 w-3.5 text-amber-500 shrink-0" />
+              <span>Provisional visual reaction time screening. Individual trial latencies saved securely.</span>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-center gap-3 mt-4">
+              <button onClick={initGameSession} className="btn-primary px-6 py-2 text-xs flex items-center">
+                <RotateCcw className="h-3.5 w-3.5 mr-1.5" /> Retest / Next Session
+              </button>
+              <button 
+                onClick={() => navigate('/dashboard')} 
+                className="btn-outline px-6 py-2 text-xs flex items-center bg-white dark:bg-slate-900"
+              >
+                <LayoutDashboard className="h-3.5 w-3.5 mr-1.5" /> Return to Dashboard
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

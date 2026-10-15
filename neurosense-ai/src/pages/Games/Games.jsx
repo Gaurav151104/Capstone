@@ -24,10 +24,16 @@ export default function Games() {
         <p className="text-slate-500 dark:text-slate-400">{t.games_subtitle || 'Scientifically designed cognitive screening and brain training exercises.'}</p>
       </div>
 
+      {/* Provisional Norms Notice */}
+      <div className="bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/40 text-amber-900 dark:text-amber-200 rounded-xl p-3.5 flex items-center text-xs font-medium shadow-sm">
+        <Info className="h-4 w-4 mr-2.5 text-amber-600 dark:text-amber-400 flex-shrink-0" />
+        <p>All cognitive screening measures (Word Recall, Image Recall, Reaction Time, and Memory Match) use provisional normative approximations. Screening aid only, not a medical diagnosis.</p>
+      </div>
+
       {!hasPlayed && (
         <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-900/30 text-blue-800 dark:text-blue-300 rounded-xl p-4 flex items-center shadow-sm">
           <Info className="h-5 w-5 mr-3 text-blue-600 dark:text-blue-400 flex-shrink-0" />
-           <p className="font-medium">{t.games_subtitle || 'Complete assessments to build your cognitive profile.'}</p>
+          <p className="font-medium text-sm">{t.games_subtitle || 'Complete assessments to build your cognitive profile.'}</p>
         </div>
       )}
 
@@ -83,6 +89,7 @@ export default function Games() {
             {t.start_game || 'Play Now'} <ArrowRight className="ml-2 h-4 w-4" />
           </Link>
         </Card>
+
       </div>
     </div>
   );

@@ -22,10 +22,34 @@ import {
 
 export default function Dashboard() {
   const { user } = useAuth();
-  const { t } = useApp();
-  const [logs] = useState(() => gameService.getUserLogs());
-  const [riskAssessment] = useState(() => riskService.calculateRisk(user));
-  const hasData = logs.length > 0;
+  const { t = {} } = useApp();
+  const [logs, setLogs] = useState(() => {
+    try {
+      return (gameService && typeof gameService.getUserLogs === 'function') ? gameService.getUserLogs() : [];
+    } catch (e) {
+      return [];
+    }
+  });
+  const [riskAssessment, setRiskAssessment] = useState(() => {
+    try {
+      return (riskService && typeof riskService.calculateRisk === 'function') ? riskService.calculateRisk(user) : { riskLevel: 'Unknown', score: 0 };
+    } catch (e) {
+      return { riskLevel: 'Unknown', score: 0 };
+    }
+  });
+
+  React.useEffect(() => {
+    try {
+      const userLogs = gameService.getUserLogs();
+      setLogs(Array.isArray(userLogs) ? userLogs : []);
+      const risk = riskService.calculateRisk(user);
+      setRiskAssessment(risk);
+    } catch (e) {
+      console.warn('Dashboard refresh error:', e);
+    }
+  }, [user]);
+
+  const hasData = Array.isArray(logs) && logs.length > 0;
 
   const getRecentChartData = () => {
     if (!hasData) return [];

@@ -4,7 +4,7 @@ import { translations } from '../utils/translations';
 export const useApp = () => {
   const { theme, toggleTheme, language, setLanguage } = useAppContext();
   
-  const t = translations[language];
+  const t = translations[language] || translations.en || {};
 
   return {
     theme,
